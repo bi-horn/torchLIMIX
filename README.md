@@ -9,7 +9,7 @@ TorchLIMIX is a PyTorch implementation of [LIMIX](https://github.com/limix/limix
 - **GPU acceleration** — PyTorch backend for large-scale datasets
 - **Flexible input formats** — PLINK binary, HDF5, CSV, TSV, TXT with automatic delimiter detection
 - **Command-line interface** — Run analyses directly from the terminal
-- **Multivariate GWAS** — Test for common, any-effect, or trait-specific genetic effects
+- **Multivariate GWAS** — Test for common, any-effect, or phenotype-specific genetic effects
 - **Variance decomposition** — Partition phenotypic variance into genetic and environmental components
 - **Prediction** — Genomic prediction via multi-trait BLUP, with internal cross-validation or external genotype files
 
@@ -223,8 +223,8 @@ For all text formats (`.csv`, `.tsv`, `.txt`), the delimiter is auto-detected by
 | `--dset` | Dataset name (used for output organization) |
 | `--output_directory` | Results output directory |
 | `--test_type` | Hypothesis test: `common`, `any`, `specific`, `any_vs_common`, `specific_vs_common` |
-| `--pheno_idx` | Trait index for trait-specific tests (0-indexed) |
-| `--rank` | Model rank (default: number of traits) |
+| `--pheno_idx` | Trait index for phenotype-specific tests (0-indexed) |
+| `--rank` | Model rank (default: number of phenotypes) |
 | `--transformation_method` | Phenotype transformation: `int`, `z_score`, or `none` |
 | `--device` | Use GPU (1) or CPU (0). Default: GPU if available |
 
@@ -247,7 +247,7 @@ For all text formats (`.csv`, `.tsv`, `.txt`), the delimiter is auto-detected by
 
 | Argument | Description |
 |----------|-------------|
-| `--train_pct` | Training set proportion (0.0–1.0). Default: 0.8 |
+| `--train_pct` | Training set proportion (0.0–1.0). Default: 1.0 |
 | `--val_pct` | Validation set proportion (0.0–1.0). Default: 0.0 |
 | `--predict_geno_path` | Path to external genotype file for prediction. When provided, the model trains on 100% of the original dataset and predicts phenotypes for the new samples. Supported formats: `.bed`, `.h5`, `.hdf5`, `.csv`, `.tsv`, `.txt`, `.npz` |
 

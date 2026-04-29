@@ -1,7 +1,7 @@
 project: "TorchLIMIX" 
-test_type: "any_vs_common"
+test_type: "any_vs_common" # specify test if you want to use for GWAS (choose between common, any, specific or any_vs_common)
 analysis: "gwas" # Choose between gwas, vardec (variance decomposition) and prediction
-pheno_idx: 0
+pheno_idx: 0      # only relevant for specific effect (vs common) test
 verbose: True
 rank: 4
 

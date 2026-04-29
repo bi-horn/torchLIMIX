@@ -31,7 +31,7 @@ class LRFreeFormCovTorch(TorchFunction, VersionedCacheMixin):
         self.n_params = dim * rank
         
         # NumPy default: ones((dim, rank))
-        if rank < dim or original_L_init:
+        if original_L_init:
             L_init = torch.ones(dim, rank, device=device, dtype=torch.double)
         else:
             # QR initialization for better numerical properties when rank >= dim
