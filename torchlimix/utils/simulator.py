@@ -841,8 +841,8 @@ class PhenoSimulator:
         v_s: Variance explained by regional effects
         v_bg: Variance explained by background effects  
         alpha: Fraction of shared signal (α in paper)
-        beta: Fraction of residual variance that is non-iid (β in paper)
-        n_hidden: Number of hidden confounders (K in paper)
+        beta: Fraction of residual variance that is non-iid 
+        n_hidden: Number of hidden confounders 
 
         Returns:
         H_shared: Shared hidden component H^(s)

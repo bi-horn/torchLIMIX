@@ -1109,7 +1109,7 @@ class MultitaskDatasetSNP:
 
             _, QS, G_stable = prepare_kinship_pipeline_torch(
                 G=G_tensor, 
-                debug=True,
+                debug=False,
                 chunk_size=dynamic_chunk
             )
             del G_tensor
