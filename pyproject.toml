@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "torchlimix"
+version = "1.0.0"
+description = "TorchLIMIX analysis for multivariate GWAS, variance decomposition and prediction."
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Bibiana M. Horn", email = "bibiana.horn@hpi.de"},
+    {name = "Christoph Lippert", email = "christoph.lippert@hpi.de"}
+]
+keywords = ["genetics", "multivariate gwas", "gene-by-environment interaction", "variance decomposition"]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+# Runtime dependencies (install torch separately — see README)
+dependencies = [
+    "adjustText>=1.0.0",
+    "numpy>=1.20.0",
+    "pandas>=2.0.0,<2.4.0",
+    "pandas-plink>=2.2.0",
+    "pandera>=0.20.0",
+    "patsy>=1.0.0",
+    "statsmodels>=0.14.0",
+    "xarray>=2024.1.0",
+    "PyYAML>=5.0",
+    "scipy>=1.7.0",
+    "matplotlib>=3.5.0",
+    "scikit-learn>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "pytest-cov>=2.0",
+    "black>=22.0",
+    "flake8>=4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/bi-horn/torchlimix"
+"Bug Reports" = "https://github.com/bi-horn/torchlimix/issues"
+"Source" = "https://github.com/bi-horn/torchlimix"
+Documentation = "https://github.com/bi-horn/torchlimix#readme"
+
+[project.scripts]
+torchlimix = "torchlimix.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["torchlimix*"]
+
+[tool.setuptools.package-data]
+torchlimix = [
+    "configs/*.yaml", 
+    "configs/*.yml", 
+    "configs/*.json", 
+    "data/*",          
+    "*.txt", 
+    "*.md"
+]

@@ -1,0 +1,4 @@
+{
+    "thaliana_horton_geno_path": "${PACKAGE_ROOT}/torchlimix/data/genotype_horton_processed",
+    "thaliana_1001_geno_path": "${PACKAGE_ROOT}/torchlimix/data/genotype_1001_processed"
+}

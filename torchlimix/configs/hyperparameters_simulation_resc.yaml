@@ -1,0 +1,48 @@
+project: "TorchLIMIX" 
+test_type: "any_vs_common" # specify test if you want to use SNP-based approach (choose between common, any, specific or any_specific)
+analysis: "gwas" # choose between gwas or vardec
+pheno_idx: 0 # only relevant for specific effect test
+verbose: True
+rank: 4
+
+output_directory: "/sc/home/bibiana.horn/projects/torchLIMIX/simulations/results"
+
+original_L_init: False
+num_threads: 8
+mean_type: "Constant"
+
+keep_latest_outputs: 10 # Number of outputs to save in output_directory and output_directory_optim (if simulation is on then only output_directory_optim folders will be deleted)
+
+data_param:
+  dset: "thaliana_horton" 
+  train_pct: 1.0
+  val_pct: 0.0
+  data_path_config: "${PACKAGE_ROOT}/torchlimix/configs/config.json"
+  batch_size: 0
+  seed: 42 
+  num_workers: 0
+  simulated: True
+  rep_idx: 0
+  num_samples: 250
+  eta: 0.0
+  use_heterogeneity: False
+  corr_bounds: 0
+  vardec_scenario: 3
+  num_tasks: 4
+  ncausal: 1
+  reference_trait: 0
+  transformation_method: "int"
+  use_cached: False
+  use_cached_geno: False
+  
+  # Covariate handling (mutually exclusive):
+  regress_out_covariates: True # Regress covariates before analysis (default: True if cov_path provided)
+  include_covariates_in_model: False # Include covariates in M matrix (alternative approach)
+  
+  # Batch and covariate correction:
+  regress_out_batch_effects: True  # Auto-enabled if batch_path is provided
+  
+gpus: 1  # 1 for "cuda" or 0 for "cpu"
+num_devices: 1
+
+# python -m torchlimix.run_torchlimix --config torchlimix/configs/hyperparameters_simulation_resc.yaml
