@@ -26,8 +26,8 @@ Conda will automatically handle installing Python, PyTorch (with the correct bin
 git clone https://github.com/bi-horn/torchlimix.git
 cd torchlimix
 
-# 2. Create the environment and install everything
-conda env create -f environment.yml
+# 2. Create the environment and install  (Choose between linux or macos)
+conda env create -f environment_linux.yml
 
 # 3. Activate the new environment
 conda activate torchlimix-env
