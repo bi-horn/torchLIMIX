@@ -27,7 +27,7 @@ git clone https://github.com/bi-horn/torchlimix.git
 cd torchlimix
 
 # 2. Create the environment and install  (Choose between linux or macos)
-conda env create -f environment_linux.yml
+conda env create -f environment_macos.yml
 
 # 3. Activate the new environment
 conda activate torchlimix-env
@@ -114,6 +114,7 @@ torchlimix \
     --output_directory ~/results
 ```
 
+
 ### Prediction
 
 Prediction supports two scenarios: evaluating accuracy on a held-out test split, or predicting phenotypes for new individuals from an external genotype file.
@@ -131,7 +132,7 @@ torchlimix \
     --output_directory ~/results
 ```
 
-The model trains on 80% of the samples and predicts the remaining 20%. Prediction metrics (MSE, correlation, R²) are computed against the held-out ground truth.
+The model trains on 90% of the samples and predicts the remaining 10%. Samples are assigned to splits by random permutation with a fixed seed (default 42), so results are reproducible. The test proportion is `1 - train_pct - val_pct`; setting `--val_pct 0.0` gives a simple train/test split. Prediction metrics (MSE, correlation, R²) are computed against the held-out ground truth.
 
 **Scenario B — External genotype file** (no ground truth):
 
