@@ -1,0 +1,2 @@
+Raw genotype data were downloaded from easyGWAS (https://easygwas.ethz.ch/) and processed with PLINK v1.9 using a minor allele frequency filter of MAF > 0.1.
+Grimm, D.G., Roqueiro, D., Salome, P., Kleeberger, S., Greshake, B., Zhu, W., Liu, C., Lippert, C., Stegle, O., Schölkopf, B., Weigel, D., and Borgwardt, K. (2017). easyGWAS: A Cloud-Based Platform for Comparing the Results of Genome-Wide Association Studies. The Plant Cell 29(1): 5–19. doi:10.1105/tpc.16.00551.

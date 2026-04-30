@@ -1,35 +1,40 @@
-# Installation via pip
+# Installation
 
-## Create new environment
+## Option 1: Installation via Conda (Recommended)
+
+```bash
+# Create the environment (pick the file for your platform)
+conda env create -f environment_macos.yml    # macOS
+conda env create -f environment.yml          # Linux / Windows (CUDA)
+
+conda activate torchlimix-env
+
+# Test
+python3 -c "import torchlimix; print('Import OK')"
+torchlimix --help
+```
+
+## Option 2: Installation via pip
+
+```bash
 conda create -n torchlimix-env python=3.11 --no-default-packages -y
 conda activate torchlimix-env
 
-## Install torch via conda
-pip3 install torch --index-url https://download.pytorch.org/whl/cu121
+# Install PyTorch for your platform
+pip3 install torch --index-url https://download.pytorch.org/whl/cu121  # Linux/Windows (CUDA 12.1)
+pip3 install torch                                                      # macOS
 
-## Install your package (run from your project root)
+# Install torchlimix (run from project root)
 pip3 install .
 
-## Test
+# Test
 python3 -c "import torchlimix; print('Import OK')"
-
-
-------------------------------------------------
-
-# Installation via conda
-# Create the environment and installs everything
-# This single command installs Python, Conda's PyTorch, and triggers pip to install your package
-conda env create -f environment.yml
-
-# Activate the new environment
-conda activate torchlimix-env
-
-# Test the Python import
-python3 -c "import torchlimix; print('Import OK')"
-
-# Test the CLI (since we fixed the JSON config path earlier!)
 torchlimix --help
+```
 
-# Clean up
+## Clean up
+
+```bash
 conda deactivate
 conda remove -n torchlimix-env --all -y
+```

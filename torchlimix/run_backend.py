@@ -950,7 +950,7 @@ def setup(config):
 
 def get_device(config):
     """
-    Determine the device ('cuda', 'mps', or 'cpu') based on configuration and availability.
+    Determine the device ('cuda', or 'cpu') based on configuration and availability.
     """
     if torch.cuda.is_available() and config.get("gpus", 0) > 0:
         device = "cuda"  # Use CUDA if available and requested
