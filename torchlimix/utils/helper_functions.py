@@ -150,7 +150,7 @@ def get_data_snp(
             batch_path=batch_path,
             cov_path=cov_path,
             output_dir=output_dir,
-            predict_geno_path=predict_geno_path,   # <── NEW
+            predict_geno_path=predict_geno_path,   
             verbose=verbose,
             **data_config
         )

@@ -405,19 +405,16 @@ def run_mt_lmm(
             master.split_indices['train'], dtype=torch.long
         )
 
-        # Move genotype (SNP) data to device, then release the CPU original
         X_snp_all = master.gen_data_tensor_full[train_idx].to(device)
         master.gen_data_tensor_full = None
         gc.collect()
         logger.info(f"X_snp_all on {device}: {X_snp_all.shape}")
 
-        # Move G_stable to device, release CPU original
         G_stable = master.G_stable[train_idx].to(device)
         master.G_stable = None
         gc.collect()
         logger.info(f"G_stable on {device}: {G_stable.shape}")
 
-        # Move phenotype to device, release CPU original
         Y_stacked = master.df_tensor_full[train_idx].to(device)
         master.df_tensor_full = None
         gc.collect()
@@ -430,7 +427,6 @@ def run_mt_lmm(
         else:
             covariates = None
 
-        # Free the SplitView copies that the DataLoader was holding
         for loader in (tl, vl, ttl):
             if loader is not None and hasattr(loader, 'dataset'):
                 ds = loader.dataset
@@ -443,11 +439,6 @@ def run_mt_lmm(
     
     # Extract covariates if present (for GWAS/vardec)
     if analysis_type != "prediction":
-        # Debug info from already-stacked tensors (no extra batch load)
-        #logger.info(f"DEBUG: X_snp_all={X_snp_all.shape}, G_stable={G_stable.shape}, "
-        #             f"Y_stacked={Y_stacked.shape}, covariates={'None' if covariates is None else covariates.shape}")
-        #logger.info(f"DEBUG: data_param regress_out_covariates = {data_param.get('regress_out_covariates')}")
-        #logger.info(f"DEBUG: data_param include_covariates_in_model = {data_param.get('include_covariates_in_model')}")
 
         A = torch.eye(p, device=device)
         M = torch.ones((n, 1), device=device)
@@ -558,14 +549,6 @@ def run_mt_lmm(
             chol_dim = n_samples * n_traits
 
             # Per-SNP memory estimate
-            # The cholesky_solve no longer broadcasts Z_chol per SNP
-            # (reshape trick: single solve, constant Z_chol).
-            # Remaining per-SNP costs:
-            #   1. Data vectors:            n_samples              (×2)
-            #   2. XtX-style matrices:      total_matrix_size²     (×4)
-            #   3. Trait covariance ops:     n_traits²             (×6)
-            #   4. Intermediate vectors:     total_matrix_size     (×4)
-            #   5. Reshape solve RHS/result: chol_dim × total_matrix_size (×2)
             SAFETY_FACTOR = 2.0
             bytes_per_snp = int((
                 n_samples * 8 * 2 +
@@ -610,7 +593,6 @@ def run_mt_lmm(
                 alignment,
             )
 
-            # Dry-run with the actual dominant allocation pattern
             while chunk_size > alignment:
                 try:
                     t1 = torch.empty(
