@@ -22,11 +22,9 @@ from torchlimix.utils.simulator import PhenoSimulator
 from torchlimix.utils.vardec_simulator import VarDecSimulator
 torch.set_default_dtype(torch.float64)
 
-
 _EXCEL_EXTENSIONS = {'.xlsx', '.xls'}
 _DELIMITED_EXTENSIONS = {'.csv', '.tsv', '.txt'}
 _SUPPORTED_EXTENSIONS = _EXCEL_EXTENSIONS | _DELIMITED_EXTENSIONS
-
 
 @dataclass
 class DataPaths:
@@ -80,7 +78,7 @@ class CorrectionConfig:
     """Phenotype correction settings."""
     regress_batch: bool = True
     regress_covariates: bool = True
-    per_trait_batch: bool = False
+    per_trait_batch: bool = True # every trait gets its own batch column
     transformation: str = "none"  # "none", "int", "z_score"
     
     def validate(self) -> None:
@@ -333,7 +331,6 @@ def _load_genotype_file(
         f"Unsupported genotype format '{ext}'. Supported: {sorted(supported)}"
     )
 
-
 class MultitaskDatasetSNP:
     """
     Multi-task SNP dataset with phenotype/genotype loading, corrections, and QS decomposition.
@@ -357,7 +354,6 @@ class MultitaskDatasetSNP:
         split_config: Optional[SplitConfig] = None,
         sim_config: Optional[SimulationConfig] = None,
         correction_config: Optional[CorrectionConfig] = None,
-        # Legacy kwargs support
         **kwargs
     ):
         """
@@ -462,7 +458,7 @@ class MultitaskDatasetSNP:
             self.correction_config = CorrectionConfig(
                 regress_batch=kwargs.get('regress_out_batch_effects', True),
                 regress_covariates=kwargs.get('regress_out_covariates', True),
-                per_trait_batch=kwargs.get('per_trait_batch', False),
+                per_trait_batch=kwargs.get('per_trait_batch', True),
                 transformation=kwargs.get('transformation_method', 'none'),
             )
         
@@ -497,19 +493,26 @@ class MultitaskDatasetSNP:
     
     def _load_pipeline(self) -> None:
         import gc
-        
+
         self._resolve_paths()
         self.gen_data_standard, self.snp_positions = self._load_genotype()
-        self.df = self._load_phenotype()
+        self.df = self._load_phenotype()          # raw phenotype, no transforms yet
         self._align_samples()
 
-        if (self.correction_config.regress_batch or 
-            self.correction_config.regress_covariates or 
-            self.paths.cov):
-            self._apply_corrections()
-
         self.total_samples = len(self.df)
-        self._setup_splits_and_qs()
+        self._create_splits()
+        train_idx = np.asarray(self.split_indices['train'], dtype=np.int64)
+
+        self._apply_transformations(train_idx)    # fits on train, applies to all
+        self._compute_phenotype_stats()          
+
+        if (self.correction_config.regress_batch or
+            self.correction_config.regress_covariates or
+            self.paths.cov):
+            self._apply_corrections(train_idx)
+
+        self._compute_qs()
+        self._set_current_split()
 
         if hasattr(self, 'simulated_data_class'):
             self.simulated_data_class = None
@@ -517,7 +520,7 @@ class MultitaskDatasetSNP:
             self.Xr = None
         if hasattr(self, 'global_indices'):
             self.global_indices = None
-        
+
         gc.collect()
 
     def _resolve_paths(self) -> None:
@@ -696,10 +699,6 @@ class MultitaskDatasetSNP:
         # Load from source
         self._df = self._load_phenotype_source()
         
-        # Transform and compute stats
-        self._apply_transformations()
-        self._compute_phenotype_stats()
-        
         return self._df
     
     def _load_phenotype_source(self) -> pd.DataFrame:
@@ -829,7 +828,7 @@ class MultitaskDatasetSNP:
         cfg = self.sim_config  
         import gc
 
-        # Compute kinship ONCE with safe chunk size
+        # Compute kinship once with safe chunk size
         num_samples = self.gen_data_standard.shape[0]
         dynamic_chunk = 100000 if num_samples <= 1000 else 1000
 
@@ -886,7 +885,6 @@ class MultitaskDatasetSNP:
         self._info = info
         print(f"[INFO] Generated simulation_info with keys: {list(self._info.keys())}")
 
-        # Free the massive Kinship matrix now that simulation is done
         del K_np
         gc.collect()
 
@@ -895,40 +893,41 @@ class MultitaskDatasetSNP:
 
         return df
 
-    def _apply_transformations(self) -> None:
-        """
-        Apply phenotype transformations to self._df.
-        
-        Updates:
-            - self._df: Transformed phenotype DataFrame
-            - self.correction_metadata['transformations']['applied']: Set to True if applied
-        """
+    def _apply_transformations(self, train_idx: np.ndarray) -> None:
         method = self.correction_config.transformation
-        
         if method in [None, 'none', '']:
             self._log("[INFO] No transformation applied")
             return
-        
         if method not in ['z_score', 'int']:
             raise ValueError(
-                f"Unknown transformation: '{method}'. "
-                f"Valid options: 'none', 'z_score', 'int'"
+                f"Unknown transformation: '{method}'. Valid options: 'none', 'z_score', 'int'"
             )
-        
-        self._log(f"[INFO] Applying transformation: {method}")
-        
-        # Check for missing values
+
         n_missing = self._df.isna().sum().sum()
         if n_missing > 0:
-            self._log(f"[WARNING] Found {n_missing} missing values. NaN will be preserved.")
-        
-        # Apply transformation
-        self._df = standardize_data(self._df, method=method)
-        
-        # Update metadata
+            per_col = self._df.isna().sum()
+            bad = per_col[per_col > 0]
+            details = ", ".join(f"{col}={n}" for col, n in bad.items())
+            raise ValueError(
+                f"Phenotype data contains {n_missing} missing value(s). "
+                f"NaN imputation is not supported. "
+                f"Per-column NaN counts: {details}. "
+                f"Please drop rows with NaN values or impute them before loading."
+            )
+
+        self._log(f"[INFO] Applying transformation: {method} (fit on train rows only)")
+        if method == 'z_score':
+            train_rows = self._df.iloc[train_idx]
+            mu  = train_rows.mean()
+            sig = train_rows.std().replace(0, 1.0)
+            self._df = (self._df - mu) / sig
+        else:  # 'int'
+            for name, idx in self.split_indices.items():
+                if idx:
+                    rows = self._df.iloc[idx]
+                    self._df.iloc[idx] = standardize_data(rows, method='int').values
+
         self.correction_metadata['transformations']['applied'] = True
-        
-        # Log result statistics
         if self.verbose:
             self._log_transformation_stats()
     
@@ -993,53 +992,36 @@ class MultitaskDatasetSNP:
         
         self.df = self.df.loc[common]
         self.gen_data_standard = self.gen_data_standard.loc[common]
-    
-    def _apply_corrections(self) -> None:
-        """Apply phenotype corrections."""
+
+    def _apply_corrections(self, train_idx: np.ndarray) -> None:
         will_correct = (
             (self.correction_config.regress_batch and self.paths.batch) or
             (self.correction_config.regress_covariates and self.paths.cov)
         )
-
-        if will_correct:
-            self.df_uncorrected = self.df.copy()
-        else:
-            self.df_uncorrected = None
+        self.df_uncorrected = self.df.copy() if will_correct else None
 
         if self.correction_config.regress_batch and self.paths.batch:
-            self._apply_batch_correction()
+            batch_df = self._load_auxiliary_file(self.paths.batch, "batch")
+            if batch_df is not None:
+                self.df, _ = regress_batch_effects(
+                    self.df, batch_df,
+                    per_trait=self.correction_config.per_trait_batch,
+                    train_idx=train_idx,
+                )
+                self.correction_metadata['batch_correction']['applied'] = True
 
         if self.paths.cov:
-            self._log(f"[INFO] paths.cov = {self.paths.cov}")
-            if self.correction_config.regress_covariates:
-                self._apply_covariate_regression()
-            else:
-                self._load_covariates_for_model()
-    
-    def _apply_batch_correction(self) -> None:
-        """Apply batch effect correction."""
-        self._log("[INFO] Applying batch correction")
+            cov_df = self._load_auxiliary_file(self.paths.cov, "covariate")
+            if cov_df is not None:
+                if self.correction_config.regress_covariates:
+                    self.df, _ = regress_continuous_covariates(
+                        self.df, cov_df, train_idx=train_idx,
+                    )
+                    self.correction_metadata['covariate_correction']['applied'] = True
+                else:
+                    self.covariate_matrix = torch.as_tensor(cov_df.values, dtype=torch.float64)
+                    self.covariate_names  = list(cov_df.columns)
         
-        batch_df = self._load_auxiliary_file(self.paths.batch, "batch")
-        if batch_df is None:
-            return
-        
-        self.df, stats = regress_batch_effects(self.df, batch_df, ...)
-        
-        self.correction_metadata['batch_correction']['applied'] = True
-    
-    def _apply_covariate_regression(self) -> None:
-        """Regress out covariates."""
-        self._log("[INFO] Regressing out covariates")
-        
-        cov_df = self._load_auxiliary_file(self.paths.cov, "covariate")
-        if cov_df is None:
-            return
-        
-        self.df, stats = regress_continuous_covariates(self.df, cov_df)
-        
-        self.correction_metadata['covariate_correction']['applied'] = True
-    
     def _load_covariates_for_model(self) -> None:
         """Load covariates as fixed effects."""
         cov_df = self._load_auxiliary_file(self.paths.cov, "covariate")
@@ -1323,6 +1305,7 @@ def get_data_multitask_snp(
     cov_path: Optional[str] = None,
     output_dir: Optional[str] = None,
     predict_geno_path: Optional[str] = None,
+    predict_cov_path:  Optional[str] = None,
     loader_config: Optional[DataLoaderConfig] = None,
     verbose: bool = True,
     **config_params
@@ -1330,7 +1313,7 @@ def get_data_multitask_snp(
     """
     Create DataLoaders for multitask SNP data.
     
-    Loads data ONCE, then creates split-specific views.
+    Loads data once, then creates split-specific views.
     """
     if loader_config is None:
         loader_config = DataLoaderConfig(
@@ -1394,7 +1377,7 @@ def get_data_multitask_snp(
             print(f"[INFO] Test split: {len(test_dataset)} samples")
 
     if predict_geno_path is not None:
-        pred_view = PredictionSplitView(master_dataset, predict_geno_path)
+        pred_view = PredictionSplitView(master_dataset, predict_geno_path, predict_cov_path)
         loaders['test'] = _FullBatchLoader(pred_view)
         if verbose:
             print(f"[INFO] Prediction split (external genotypes): "
@@ -1408,6 +1391,7 @@ def get_data_multitask_snp(
     if predict_geno_path is not None:
         data_meta['prediction_sample_index'] = pred_view.sample_index
         data_meta['predict_geno_path'] = predict_geno_path
+        data_meta['predict_cov_path']        = predict_cov_path
 
     if verbose:
         print(f"\n[INFO] Created {len(loaders)} dataloader(s): {list(loaders.keys())}")
@@ -1669,31 +1653,55 @@ class PredictionSplitView:
     Produces the same tuple layout as SplitView:
         (geno, geno_qs, pheno_placeholder, abs_index)
     """
- 
-    def __init__(self, master, predict_geno_path: str):
+    def __init__(
+        self,
+        master: MultitaskDatasetSNP,
+        predict_geno_path: str,
+        predict_cov_path: Optional[str] = None,
+    ):
         self.master = master
-        self._has_covariates = False
- 
-        geno_values, self.sample_index = load_prediction_genotypes(
-            predict_geno_path
-        )
+
+        geno_values, self.sample_index = load_prediction_genotypes(predict_geno_path)
         geno_df = pd.DataFrame(geno_values, columns=range(geno_values.shape[1]))
-        self.gen_data_tensor = master.normalize_new_genotypes(geno_df)   # z-scored
-        if master._G_norm is not None and master._G_norm != 0:
-            self.geno_qs_tensor = self.gen_data_tensor / master._G_norm  # z-scored / G_norm
-        else:
-            self.geno_qs_tensor = self.gen_data_tensor.clone()
- 
+        self.gen_data_tensor = master.normalize_new_genotypes(geno_df)
+        self.geno_qs_tensor = (
+            self.gen_data_tensor / master._G_norm
+            if master._G_norm not in (None, 0)
+            else self.gen_data_tensor.clone()
+        )
+
         n_new   = self.gen_data_tensor.shape[0]
         n_tasks = master.df_tensor_full.shape[1]
- 
-        self.data_tensor = torch.full(
-            (n_new, n_tasks), float('nan'), dtype=torch.float64
-        )
+        self.data_tensor = torch.full((n_new, n_tasks), float('nan'), dtype=torch.float64)
         self.abs_indices = torch.arange(n_new, dtype=torch.long)
- 
+
+        # Optional external covariates — must match training column order/count
+        self._has_covariates = False
+        self.cov_tensor = None
+        if predict_cov_path is not None:
+            if master.covariate_matrix is None:
+                raise ValueError(
+                    "predict_cov_path provided but training had no covariates; "
+                    "ignore predict_cov_path or retrain with covariates."
+                )
+            cov_df = _read_tabular_file(predict_cov_path)
+            cov_df = master._set_fid_iid_index(cov_df)
+            cov_df = cov_df.loc[cov_df.index.intersection(self.sample_index).union(cov_df.index)]
+            # Align to prediction sample order
+            cov_df = cov_df.reindex(self.sample_index)
+            if cov_df.isna().any().any():
+                raise ValueError("Some prediction samples are missing covariate values.")
+            n_train_cov = master.covariate_matrix.shape[1]
+            if cov_df.shape[1] != n_train_cov:
+                raise ValueError(
+                    f"Covariate column mismatch: training has {n_train_cov}, "
+                    f"prediction file has {cov_df.shape[1]}."
+                )
+            self.cov_tensor = torch.as_tensor(cov_df.values, dtype=torch.float64)
+            self._has_covariates = True
+
         self.indices = list(range(n_new))
-        self.split   = "predict"
+        self.split = "predict"
  
     def get_full_batch(self):
         return (

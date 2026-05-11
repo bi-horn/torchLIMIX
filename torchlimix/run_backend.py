@@ -165,11 +165,11 @@ def process_snps(
             chunk_size, cache_clear_interval,
             progress_callback=progress_callback,
         )
-        lml1     = scan0["lml"]       # already CPU (from mmap refactor)
+        lml1     = scan0["lml"]      
         scale_H1 = scan0["scale"]
         beta1    = scan0["effsizes1"]
         beta1_se = scan0["effsizes1_se"]
-        del scan0                      # free the rest (effsizes0, pve, etc.)
+        del scan0                      
 
     # Scan 1
     lml2, scale_H2, beta2, beta2_se = None, None, None, None
@@ -234,66 +234,50 @@ def process_snps(
 
     return elapsed, snps_per_second
 
+
 def run_mt_lmm(
-    config, 
+    config,
     analysis_type,
-    train_args, 
-    tl, 
-    vl, 
-    ttl, 
+    train_args,
+    tl,
+    vl,
+    ttl,
     data_meta,
     uid,
-    output_dir
+    output_dir,
 ):
     """
     Run multi-trait LMM analysis (GWAS, variance decomposition, or prediction).
     """
-    X_snp_all = None
-    G_stable = None
-    scanner = None
-
     device = train_args["device"]
 
-    # Extract all parameters from config
-    data_param = config.get("data_param", {})
+    # Parameters
+    data_param  = config.get("data_param", {})
     rank_config = config.get("rank")
-    simulated = data_param.get("simulated", False)
-    
+    simulated   = data_param.get("simulated", False)
+
+    # Simulation-only parameters (None / False when not simulated)
+    rep_idx           = data_param.get("rep_idx")           if simulated else None
+    eta               = data_param.get("eta")               if simulated else None
+    corr_bounds       = data_param.get("corr_bounds")       if simulated else None
+    vardec_scenario   = data_param.get("vardec_scenario")   if simulated else None
+    use_heterogeneity = data_param.get("use_heterogeneity", False) if simulated else False
+
+    logger.info("=" * 70)
+    logger.info(f"ANALYSIS PARAMETERS{' (SIMULATED)' if simulated else ''}:")
+    logger.info("=" * 70)
+    logger.info(f"Analysis type: {analysis_type}")
+    logger.info(f"Output directory: {output_dir}")
+    logger.info(f"Rank: {rank_config}")
     if simulated:
-        rep_idx = data_param.get("rep_idx", None)
-        eta = data_param.get("eta", None)
-        corr_bounds = data_param.get("corr_bounds", None)
-        vardec_scenario = data_param.get("vardec_scenario", None)
-        use_heterogeneity = data_param.get("use_heterogeneity", False)
-        
-        logger.info("="*70)
-        logger.info("ANALYSIS PARAMETERS (SIMULATED):")
-        logger.info("="*70)
-        logger.info(f"Analysis type: {analysis_type}")
-        logger.info(f"Output directory: {output_dir}")
-        logger.info(f"Rank: {rank_config}")
         logger.info(f"  rep_idx: {rep_idx}")
         logger.info(f"  eta: {eta}")
-        logger.info("="*70 + "\n")
-    else:
-        rep_idx = None
-        eta = None
-        corr_bounds = None
-        vardec_scenario = None
-        use_heterogeneity = False
-        
-        logger.info("="*70)
-        logger.info("ANALYSIS PARAMETERS:")
-        logger.info("="*70)
-        logger.info(f"Analysis type: {analysis_type}")
-        logger.info(f"Output directory: {output_dir}")
-        logger.info(f"Rank: {rank_config}")
-        logger.info("="*70 + "\n")
-    
+    logger.info("=" * 70 + "\n")
+
+    # Correction metadata 
     master = tl.dataset.master
-    correction_metadata = master.correction_metadata  # Assuming this points to the "corrections" block in your JSON
-    
-    # Check if ANY correction method was applied
+    correction_metadata = master.correction_metadata
+
     any_correction_applied = (
         correction_metadata.get('batch_correction', {}).get('applied', False) or
         correction_metadata.get('covariate_correction', {}).get('applied', False) or
@@ -301,12 +285,11 @@ def run_mt_lmm(
     )
 
     phenotype_data = {
-        'corrected': master.df_tensor_full,
-        'uncorrected': getattr(master, 'df_uncorrected', None),
-        'corrections_applied': any_correction_applied
+        'corrected':            master.df_tensor_full,
+        'uncorrected':          getattr(master, 'df_uncorrected', None),
+        'corrections_applied':  any_correction_applied,
     }
-    
-    # Log what corrections were applied
+
     if correction_metadata:
         logger.info("DATA PREPROCESSING APPLIED:")
         if correction_metadata.get('batch_correction', {}).get('applied'):
@@ -320,7 +303,7 @@ def run_mt_lmm(
             logger.info(f"  Transformation: {method}")
         logger.info("")
 
-    # Initialize results storage based on analysis type
+    # Initialize results storage
     if analysis_type == "vardec":
         logger.info("Initializing VarDecResults storage...")
         results = VarDecResults(
@@ -331,30 +314,33 @@ def run_mt_lmm(
             uid=uid,
             rank=rank_config,
             correction_metadata=correction_metadata,
-            phenotype_data=phenotype_data  
-        )  
-    
+            phenotype_data=phenotype_data,
+        )
+
     elif analysis_type == "gwas":
         logger.info("Initializing StoreResults storage...")
         results = StoreResults(
-            output_dir=output_dir, 
-            uid=uid, 
-            corr_bounds=corr_bounds, 
-            rep_idx=rep_idx, 
-            eta=eta, 
+            output_dir=output_dir,
+            uid=uid,
+            corr_bounds=corr_bounds,
+            rep_idx=rep_idx,
+            eta=eta,
             simulation_info=data_meta.get("simulation_info", None),
             rank=rank_config,
             test_type=config['test_type'],
             correction_metadata=correction_metadata,
             phenotype_data=phenotype_data,
         )
-    
+
     elif analysis_type == "prediction":
+        if ttl is None:
+            raise ValueError("Prediction requires test data loader (ttl)")
+        dtype = torch.float64
         logger.info("Initializing PredictionResultStore...")
-    
+
         sample_batch = next(iter(tl))
         n_traits = sample_batch[2].shape[1] if len(sample_batch) > 2 else data_meta.get('num_tasks', 1)
-        
+
         results = PredictionResultStore(
             output_dir=output_dir,
             uid=uid,
@@ -369,134 +355,173 @@ def run_mt_lmm(
             phenotype_data=phenotype_data,
         )
     else:
-        raise ValueError(f"Unknown analysis type: '{analysis_type}'. Must be 'gwas', 'vardec', or 'prediction'")
-    
-    # Stack data based on analysis type
-    if analysis_type == "prediction":
-        # Prediction needs separate train/val and test data
-        logger.info("Stacking data for prediction...")
-        
-        if ttl is None:
-            raise ValueError("Prediction requires test data loader (ttl)")
-        
-        dtype = torch.float64
-        
-        # Train + validation data
-        G_train = stack_data_from_loaders(tl=tl, vl=vl, ttl=None, index=1, device=device).to(dtype=dtype)
-        Y_train = stack_data_from_loaders(tl=tl, vl=vl, ttl=None, index=2, device=device).to(dtype=dtype)
-        n_train, p = Y_train.shape
-        
-        # Test data
-        G_test = stack_data_from_loaders(tl=None, vl=None, ttl=ttl, index=1, device=device).to(dtype=dtype)
-        Y_test = stack_data_from_loaders(tl=None, vl=None, ttl=ttl, index=2, device=device).to(dtype=dtype)
-        n_test = G_test.shape[0]
-        
-        logger.info(f"Train+Val: {n_train} samples, Test: {n_test} samples, Traits: {p}")
-        
-        # For prediction, we don't need SNP data or full stacking
-        n = n_train
-        
-    else:
-        logger.info("Extracting data directly from master dataset...")
-        import gc
-
-        master = tl.dataset.master
-        train_idx = torch.as_tensor(
-            master.split_indices['train'], dtype=torch.long
+        raise ValueError(
+            f"Unknown analysis type: '{analysis_type}'. Must be 'gwas', 'vardec', or 'prediction'"
         )
+
+    # Data extraction from master dataset
+    def _extract_covariates(idx):
+        if master.covariate_matrix is not None:
+            return master.covariate_matrix[idx].to(device)
+        return None
+
+    if analysis_type in ("gwas", "vardec"):
+        logger.info("Extracting data directly from master dataset...")
+
+        train_idx = torch.as_tensor(master.split_indices['train'], dtype=torch.long)
 
         X_snp_all = master.gen_data_tensor_full[train_idx].to(device)
         master.gen_data_tensor_full = None
-        gc.collect()
         logger.info(f"X_snp_all on {device}: {X_snp_all.shape}")
 
         G_stable = master.G_stable[train_idx].to(device)
         master.G_stable = None
-        gc.collect()
         logger.info(f"G_stable on {device}: {G_stable.shape}")
 
-        Y_stacked = master.df_tensor_full[train_idx].to(device)
+        Y_train = master.df_tensor_full[train_idx].to(device)
         master.df_tensor_full = None
-        gc.collect()
 
-        n, p = Y_stacked.shape
+        n, p = Y_train.shape
         logger.info(f"Data shape: {n} samples × {p} traits")
 
-        if master.covariate_matrix is not None:
-            covariates = master.covariate_matrix[train_idx].to(device)
-        else:
-            covariates = None
+        covariates = _extract_covariates(train_idx)
 
+        # Free the SplitView copies the DataLoader was holding
         for loader in (tl, vl, ttl):
             if loader is not None and hasattr(loader, 'dataset'):
                 ds = loader.dataset
                 for attr in ('data_tensor', 'gen_data_tensor'):
                     if hasattr(ds, attr):
                         setattr(ds, attr, None)
-        gc.collect()
 
         del train_idx
-    
-    # Extract covariates if present (for GWAS/vardec)
-    if analysis_type != "prediction":
+        gc.collect()
 
-        A = torch.eye(p, device=device)
-        M = torch.ones((n, 1), device=device)
+    elif analysis_type == "prediction":
+        is_external = data_meta.get('predict_geno_path') is not None
 
-        if covariates is not None:
-            logger.info(f"Adding {covariates.shape[1]} covariates to fixed effects matrix M")
-            M = torch.cat([M, covariates], dim=1)
-            logger.info(f"Updated M shape: {M.shape}")
+        if is_external:
+            logger.info("Extracting Train from master, Test from external genotypes (PredictionSplitView)...")
         else:
-            logger.info("Using intercept-only fixed effects matrix M")
-    
-    # Validate and set rank
+            logger.info("Extracting Train and Test sets from master dataset...")
+
+        # Train: always from master, raw normalized genotypes 
+        train_idx   = torch.as_tensor(master.split_indices['train'], dtype=torch.long)
+        Y_train     = master.df_tensor_full[train_idx].to(device)
+        G_raw_train = master.gen_data_tensor_full[train_idx].to(device)
+        G_stable_train = master.G_stable[train_idx].to(device)
+            
+        # Train covariates
+        covariates = _extract_covariates(train_idx)
+
+        # Test: internal split (master) or external samples (ttl.dataset)
+        if is_external:
+            pred_view   = ttl.dataset
+            Y_test      = pred_view.data_tensor.to(device)        # NaN placeholder
+            G_raw_test  = pred_view.gen_data_tensor.to(device)    # raw, normalized w/ training stats
+            test_covariates = (
+                pred_view.cov_tensor.to(device)
+                if getattr(pred_view, '_has_covariates', False) else None
+            )
+        else:
+            test_idx    = torch.as_tensor(master.split_indices['test'], dtype=torch.long)
+            Y_test      = master.df_tensor_full[test_idx].to(device)
+            G_raw_test  = master.gen_data_tensor_full[test_idx].to(device)
+            test_covariates = (
+                master.covariate_matrix[test_idx].to(device)
+                if master.covariate_matrix is not None else None
+            )
+            del test_idx
+
+        master.df_tensor_full       = None
+        master.G_stable             = None
+        master.gen_data_tensor_full = None
+
+        n,      p = Y_train.shape
+        n_test    = Y_test.shape[0]
+        n_snps    = G_raw_train.shape[1]
+        G_norm    = master._G_norm if master._G_norm not in (None, 0) else 1.0
+        kin_scale = 1.0 / (n_snps * (G_norm ** 2))   # matches G_stable @ G_stable.T scaling
+
+        # Covariate-mismatch warning for external mode
+        if is_external and covariates is not None and test_covariates is None:
+            logger.warning(
+                "Training used covariates but no covariates provided for external samples; "
+                "test side will use intercept + zero-padding to match beta shape (no covariate effect on test)."
+            )
+
+        # Free SplitView copies
+        for loader in (tl, vl, ttl):
+            if loader is not None and hasattr(loader, 'dataset'):
+                ds = loader.dataset
+                for attr in ('data_tensor', 'gen_data_tensor', 'geno_qs_tensor', 'cov_tensor'):
+                    if hasattr(ds, attr):
+                        setattr(ds, attr, None)
+
+        del train_idx
+        gc.collect()
+        if device == "cuda":
+            torch.cuda.empty_cache()
+
+        mode = "external prediction, no ground truth" if is_external else "internal test split"
+        logger.info(f"Train: {n} samples, Test: {n_test} samples ({mode})")
+        logger.info(f"Genotype shape: {tuple(G_raw_train.shape)} train, {tuple(G_raw_test.shape)} test")
+
+    # Fixed-effects design matrix + rank
+    A = torch.eye(p, device=device)
+    M = torch.ones((n, 1), device=device)
+    if covariates is not None:
+        logger.info(f"Adding {covariates.shape[1]} covariates to fixed effects matrix M")
+        M = torch.cat([M, covariates], dim=1)
+        logger.info(f"Updated M shape: {M.shape}")
+    else:
+        logger.info("Using intercept-only fixed effects matrix M")
+
     rank = rank_config if isinstance(rank_config, int) and 1 <= rank_config <= p else (
         logger.warning(f"Invalid rank '{rank_config}' provided. Using p={p}.") or p
     )
-    
     if rank > p:
         raise ValueError(
             f"Rank ({rank}) cannot exceed the number of traits ({p}). "
             f"Please set rank ≤ {p} (use {p} for full rank)."
         )
     logger.info(f"Selected rank: {rank}")
-    
+
+    # Run the actual model for the different analysis types
     # VARIANCE DECOMPOSITION
     if analysis_type == "vardec":
-        logger.info("="*70)
+        logger.info("=" * 70)
         logger.info("RUNNING VARIANCE DECOMPOSITION ANALYSIS")
-        logger.info("="*70)
-        
+        logger.info("=" * 70)
+
         logger.info("Initializing Kron model...")
         kron_model = Kron2SumTorch(
-            Y=Y_stacked, 
-            A=A, 
+            Y=Y_train,
+            A=A,
             X=M,
             G=G_stable.to(device),
-            data_meta=data_meta,  
-            rank=rank, 
-            device=device, 
-            restricted=True, 
-            config=config
+            data_meta=data_meta,
+            rank=rank,
+            device=device,
+            restricted=True,
+            config=config,
         )
 
         logger.info("Fitting null model...")
         optimization_results = kron_model.fit()
         results.add_optimization_metrics(optimization_results)
-        
+
         C0 = kron_model.C0
         C1 = kron_model.C1
         logger.info(f"Extracted covariances: C0 trace={torch.trace(C0):.4f}, C1 trace={torch.trace(C1):.4f}")
-        
+
         results.add_fitted_covariances(C0, C1)
-        
+
         logger.info("Performing variance decomposition...")
         vardec = VarDecMultiTrait(C0, C1, nsamples=n)
 
         try:
             variance_results = vardec.get_results()
-            #vardec._print_results()  
         except Exception as e:
             logger.error("Variance decomposition raised an exception: %s", e)
             import traceback
@@ -511,27 +536,27 @@ def run_mt_lmm(
                 results.add_ground_truth(data_meta['simulation_info'])
                 logger.info(f"Simulation info stored for scenario {vardec_scenario}")
             else:
-                logger.warning("No simulation_info found in data_meta for vardec analysis")        
+                logger.warning("No simulation_info found in data_meta for vardec analysis")
         results.add_vardec_results(variance_results)
         results._print_summary()
         results.save()
-        
+
         del vardec, kron_model
-    
+
     # GWAS
     elif analysis_type == "gwas":
-        logger.info("="*70)
+        logger.info("=" * 70)
         logger.info("RUNNING GWAS ANALYSIS")
-        logger.info("="*70)
-        
+        logger.info("=" * 70)
+
         gwas_failed = False
-        kron_model = None
-        scanner = None
-        
-        num_snps = data_meta['total_snps']
+        kron_model  = None
+        scanner     = None
+
+        num_snps  = data_meta['total_snps']
         test_type = config.get("test_type", "common").lower()
         logger.info(f"Running {test_type} effect test")
-        
+
         if device == "cuda" and torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -546,7 +571,7 @@ def run_mt_lmm(
             n_covariates = M.shape[1]
             a1_cols           = n_traits if test_type in ["any", "any_vs_common"] else 2
             total_matrix_size = n_traits * n_covariates + a1_cols
-            chol_dim = n_samples * n_traits
+            chol_dim          = n_samples * n_traits
 
             # Per-SNP memory estimate
             SAFETY_FACTOR = 2.0
@@ -559,8 +584,8 @@ def run_mt_lmm(
             ) * SAFETY_FACTOR)
             memory_per_snp_mb = bytes_per_snp / 1e6
 
-            gpu_name    = torch.cuda.get_device_name(device_idx).upper()
-            total_gb    = total_memory / (1024 ** 3)
+            gpu_name      = torch.cuda.get_device_name(device_idx).upper()
+            total_gb      = total_memory / (1024 ** 3)
             high_end_gpus = ("A100", "H100", "H200", "A6000", "L40", "GH200")
             is_high_end   = any(tag in gpu_name for tag in high_end_gpus)
 
@@ -615,11 +640,6 @@ def run_mt_lmm(
             logger.info(f"Post-init GPU memory: {free_memory_mb:.0f} MB truly free "
                         f"(reserved={reserved_memory/1e6:.0f} MB, "
                         f"allocated={allocated_memory/1e6:.0f} MB)")
-            logger.info(f"Cholesky dimension: {chol_dim} "
-                        f"(n_samples={n_samples} x n_traits={n_traits})")
-            logger.info(f"Memory per SNP: {memory_per_snp_mb:.3f} MB  |  "
-                        f"Fraction: {mem_fraction}  |  Hard cap: {hard_cap}  |  "
-                        f"Alignment: {alignment}  |  Safety: {SAFETY_FACTOR}x")
             logger.info(f"Auto-determined chunk size: {chunk_size}")
         else:
             chunk_size           = min(200, num_snps)
@@ -630,30 +650,32 @@ def run_mt_lmm(
         try:
             logger.info("Initializing Kron model...")
             kron_model = Kron2SumTorch(
-                Y=Y_stacked, 
-                A=A, 
+                Y=Y_train,
+                A=A,
                 X=M,
                 G=G_stable.to(device),
-                data_meta=data_meta,  
-                rank=rank, 
-                device=device, 
-                restricted=False, 
-                config=config
+                data_meta=data_meta,
+                rank=rank,
+                device=device,
+                restricted=False,
+                config=config,
             )
             optimization_results = kron_model.fit()
-            results.add_optimization_metrics(optimization_results)  
-            
+            results.add_optimization_metrics(optimization_results)
+
             results.add_cov(kron_model.C0, kron_model.C1)
-            C0 = kron_model.C0
-            C1 = kron_model.C1
-            logger.info(f"Extracted covariances: C0 trace={torch.trace(C0):.4f}, C1 trace={torch.trace(C1):.4f}")
-    
+            logger.info(
+                f"Extracted covariances: "
+                f"C0 trace={torch.trace(kron_model.C0):.4f}, "
+                f"C1 trace={torch.trace(kron_model.C1):.4f}"
+            )
+
             logger.info("Initializing fast scanner for SNP analysis...")
-            scanner = kron_model.get_fast_scanner()    
+            scanner = kron_model.get_fast_scanner()
             logger.info(f"Scanner initialized. Null scale: {scanner.null_scale.item():.6f}")
 
             C0 = kron_model.C0.detach().clone()
-            C1 = kron_model.C1.detach().clone()       
+            C1 = kron_model.C1.detach().clone()
             process_snps(
                 num_snps=num_snps,
                 chunk_size=chunk_size,
@@ -667,111 +689,95 @@ def run_mt_lmm(
                 results=results,
                 p=p,
                 test_type=test_type,
-                show_progress=True,  
+                show_progress=True,
             )
         except Exception as e:
             logger.error(f"Error during GWAS analysis: {e}")
             import traceback
             traceback.print_exc()
             gwas_failed = True
-        
+
         if gwas_failed:
             logger.warning("GWAS analysis failed - NaN values will be stored")
         else:
-            logger.info("GWAS analysis completed successfully") 
-    
+            logger.info("GWAS analysis completed successfully")
+
     # PREDICTION
     elif analysis_type == "prediction":
-        logger.info("="*70)
+        logger.info("=" * 70)
         logger.info("RUNNING PREDICTION ANALYSIS")
-        logger.info("="*70)
-        
-        # Setup model matrices for training
-        A = torch.eye(p, dtype=dtype, device=device)
-        M = torch.ones((n_train, 1), dtype=dtype, device=device)
-        
-        logger.info(f"Fitting Kron model (rank={rank})...")
+        logger.info("=" * 70)
+
+        logger.info("Fitting Kron model for analytical BLUP prediction...")
         kron_model = Kron2SumTorch(
-            Y=Y_train,
-            A=A,
-            X=M,
-            G=G_train,
-            data_meta=data_meta,
-            rank=rank,
-            device=device,
-            restricted=False,
-            config=config
+            Y=Y_train, A=A, X=M, G=G_stable_train,
+            data_meta=data_meta, rank=rank, device=device,
+            restricted=True, config=config,
         )
         kron_model.fit()
-        
         C0 = kron_model.C0.to(dtype=dtype, device=device)
         C1 = kron_model.C1.to(dtype=dtype, device=device)
         logger.info(f"C0 trace: {torch.trace(C0):.4f}, C1 trace: {torch.trace(C1):.4f}")
-        
-        # Get beta
+
         if hasattr(kron_model, 'beta') and kron_model.beta is not None:
             beta = kron_model.beta.to(dtype=dtype, device=device)
         elif hasattr(kron_model, '_beta') and kron_model._beta is not None:
             beta = kron_model._beta.to(dtype=dtype, device=device)
         else:
             beta = torch.zeros(1, p, dtype=dtype, device=device)
-        
         if beta.ndim == 1:
-            beta = beta.reshape(-1, p)
-        
-        # Compute kinship matrices at the same scale the model was fitted on
+            # Match the same vec convention scanner.null_beta uses
+            beta = beta.reshape(p, -1).T
+        assert beta.shape == (M.shape[1], p), \
+            f"beta shape {tuple(beta.shape)} != (n_cov={M.shape[1]}, P={p})"
+
         logger.info("Computing kinship matrices...")
-        train_dataset = tl.dataset
-        test_dataset  = ttl.dataset
+        K_train      = (G_raw_train @ G_raw_train.T) * kin_scale
+        K_test_train = (G_raw_test  @ G_raw_train.T) * kin_scale
+        K_test_test  = (G_raw_test  @ G_raw_test.T)  * kin_scale
 
-        # z-scored genotypes: (n, S) with all SNPs
-        G_train_z = train_dataset.gen_data_tensor.to(device)   # (n_train, S)
-        G_test_z  = test_dataset.gen_data_tensor.to(device)    # (n_test,  S)
-
-        S_snps = G_train_z.shape[1]
-        scale  = S_snps * (master._G_norm ** 2)
-
-        #logger.info(f"G_train_z: {G_train_z.shape}, G_test_z: {G_test_z.shape}")
-        #logger.info(f"Scale factor: S={S_snps} × G_norm²={master._G_norm**2:.4f} = {scale:.4f}")
-
-        K_train      = (G_train_z @ G_train_z.T) / scale
-        K_test_train = (G_test_z  @ G_train_z.T)  / scale
-        K_test_test  = (G_test_z  @ G_test_z.T)   / scale
-
-        del G_train_z, G_test_z
+        del G_raw_train, G_raw_test
         if device == "cuda" and torch.cuda.is_available():
             torch.cuda.empty_cache()
+            # Build X_train: must match M used at fit time (intercept + covariates)
+            X_train = torch.ones((n, 1), dtype=dtype, device=device)
+            if covariates is not None:
+                X_train = torch.cat([X_train, covariates.to(dtype=dtype)], dim=1)
 
-        X_train = torch.ones((n_train, 1), dtype=dtype, device=device)
+        # Build X_test: same column count as X_train so it lines up with beta
         X_test = torch.ones((n_test, 1), dtype=dtype, device=device)
-        
-        # Initialize predictor
+        if test_covariates is not None:
+            X_test = torch.cat([X_test, test_covariates.to(dtype=dtype)], dim=1)
+        elif covariates is not None:
+            # No test covariates available, pad zeros so dims match (covariate effect = 0 on test)
+            X_test = torch.cat([
+                X_test,
+                torch.zeros((n_test, covariates.shape[1]), dtype=dtype, device=device),
+            ], dim=1)
+
+        assert X_train.shape[1] == M.shape[1] == beta.shape[0], \
+            f"X_train cols ({X_train.shape[1]}) must equal M cols ({M.shape[1]}) and beta rows ({beta.shape[0]})"
+        assert X_test.shape[1] == X_train.shape[1], \
+            f"X_test cols ({X_test.shape[1]}) must match X_train cols ({X_train.shape[1]})"
+
         logger.info("Running BLUP prediction...")
         predictor = MultiTraitLMMPredict(
-            Y_train=Y_train,
-            beta=beta,
-            C0=C0,
-            C1=C1,
-            K_train=K_train,
-            X_train=X_train,
-            device=device,
-            dtype=dtype
+            Y_train=Y_train, beta=beta, C0=C0, C1=C1,
+            K_train=K_train, X_train=X_train,
+            device=device, dtype=dtype,
         )
-        
         pred_result = predictor.predict(
             X_test=X_test,
             K_test_train=K_test_train,
             K_test_test=K_test_test,
-            return_variance=True
+            return_variance=True,
         )
-        
         pred_mean = pred_result['mean']
-        pred_var = pred_result['variance']
+        pred_var  = pred_result['variance']
+        del predictor, kron_model, K_train, K_test_train, K_test_test
 
-        # Detect scenario: ground truth available?
         has_ground_truth = not torch.isnan(Y_test).all()
 
-        # Store predictions (y_true=None for external prediction)
         results.store_predictions(
             pred_mean=pred_mean,
             pred_var=pred_var,
@@ -780,12 +786,11 @@ def run_mt_lmm(
             y_true=Y_test if has_ground_truth else None,
         )
 
-        # Export human-readable CSV (always)
         sample_idx = data_meta.get('prediction_sample_index')
         results.export_predictions_csv(sample_index=sample_idx)
 
         if has_ground_truth:
-            # Scenario A: internal test split — compute & log metrics
+            # Scenario A: internal test split
             logger.info("Ground truth available. Computing prediction metrics...")
             metrics = results.compute_metrics(pred_mean=pred_mean, y_true=Y_test)
 
@@ -798,29 +803,33 @@ def run_mt_lmm(
                 cov = results.confidence_intervals['coverage']
                 logger.info(f"  CI Coverage (95%): {cov['overall']:.4f}")
         else:
-            # Scenario B: external prediction — nothing more to compute
             logger.info("External prediction mode (no ground truth).")
             logger.info("Predictions and uncertainty saved to predicted_phenotypes.csv")
 
         results.save()
 
-        del predictor, kron_model, K_train, K_test_train, K_test_test
-        del G_train, G_test, Y_train, Y_test
-
+    # Cleanup
     logger.info("Cleaning up memory...")
-    
-    if analysis_type != "prediction":
-        del X_snp_all, Y_stacked, G_stable
-        if covariates is not None:
-            del covariates
+
+    # Branch-specific tensors
+    if analysis_type in ("gwas", "vardec"):
+        del X_snp_all, G_stable
+    elif analysis_type == "prediction":
+        del Y_test
+
+    # Common cleanup 
+    del Y_train
+    if covariates is not None:
+        del covariates
 
     del tl, vl, ttl
-    torch.cuda.empty_cache()
-    
-    logger.info("="*70)
+    if device == "cuda" and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    logger.info("=" * 70)
     logger.info(f"{analysis_type.upper()} ANALYSIS COMPLETE")
-    logger.info("="*70)
-    
+    logger.info("=" * 70)
+
     return results
 
 
@@ -830,7 +839,8 @@ def run_main(config,
              annot_path=None, 
              batch_path=None, 
              cov_path=None,
-             predict_geno_path=None
+             predict_geno_path=None,
+             predict_cov_path=None,
              ):
     """
     Run the main analysis pipeline.
@@ -842,7 +852,8 @@ def run_main(config,
         annot_path: Path to annotation file (not stored in config)
         batch_path: Path to batch file (not stored in config)
         cov_path: Path to covariate file (not stored in config)
-    
+        predict_geno_path: Path to new genotype file for prediction (not stored in config)
+        predict_cov_path: Path to new covariate file for prediction; same dimension as num_samples for genotypes and covariates used in test set (not stored in config)
     Note: All other parameters are read from config['data_param'].
     File paths are passed separately because they're data-specific.
     """
@@ -879,6 +890,7 @@ def run_main(config,
             cov_path=cov_path,
             output_dir=output_dir,
             predict_geno_path=predict_geno_path,
+            predict_cov_path=predict_cov_path,
             verbose=verbose,
         )
         

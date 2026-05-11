@@ -101,6 +101,7 @@ def get_data_snp(
     cov_path: Optional[str] = None,
     output_dir: Optional[str] = None,
     predict_geno_path: Optional[str] = None,  
+    predict_cov_path: Optional[str] = None,
     verbose: bool = True,
 ) -> Tuple[DataLoader, Optional[DataLoader], Optional[DataLoader], Dict[str, Any]]:
     """
@@ -137,7 +138,7 @@ def get_data_snp(
     # Log configuration summary
     if verbose:
         _log_data_config(dset, data_config, 
-                         geno_path, pheno_path, annot_path, batch_path, cov_path)
+                         geno_path, pheno_path, annot_path, batch_path, cov_path, predict_cov_path)
     
     # Create loaders
     try:
@@ -151,6 +152,7 @@ def get_data_snp(
             cov_path=cov_path,
             output_dir=output_dir,
             predict_geno_path=predict_geno_path,   
+            predict_cov_path=predict_cov_path, 
             verbose=verbose,
             **data_config
         )
@@ -163,11 +165,9 @@ def get_data_snp(
     val_loader = loaders.get('val')
     test_loader = loaders.get('test')
     
-    # Validate train loader
     if train_loader is None:
         raise RuntimeError("Failed to create training data loader")
     
-    # Log summary
     if verbose:
         _log_loader_summary(train_loader, val_loader, test_loader, data_meta, data_config)
     
@@ -175,7 +175,7 @@ def get_data_snp(
  
 
 
-def _log_data_config(dset, data_config, geno_path, pheno_path, annot_path, batch_path, cov_path):
+def _log_data_config(dset, data_config, geno_path, pheno_path, annot_path, batch_path, cov_path, predict_cov_path):
     """Log data configuration summary."""
     logger.info("=" * 60)
     logger.info("DATA CONFIGURATION")
@@ -185,9 +185,8 @@ def _log_data_config(dset, data_config, geno_path, pheno_path, annot_path, batch
     logger.info(f"Transform: {data_config.get('transformation_method', 'none')}")
     logger.info(f"Split: train={data_config.get('train_pct', 1.0)}, val={data_config.get('val_pct', 0.0)}")
     
-    # File paths
     paths = [('geno', geno_path), ('pheno', pheno_path), ('annot', annot_path),
-             ('batch', batch_path), ('cov', cov_path)]
+             ('batch', batch_path), ('cov', cov_path), ('pred_cov', predict_cov_path)]
     path_str = ", ".join(f"{k}={'yes' if v else 'no'}" for k, v in paths)
     logger.info(f"Paths: {path_str}")
     

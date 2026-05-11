@@ -10,7 +10,7 @@ class VarDecSimulator:
     
     Y = G + Het + Noise
     
-    Each component is sampled from Matrix-Normal and scaled to target PER-TRAIT
+    Each component is sampled from Matrix-Normal and scaled to target per-trait
     variance. Total phenotypic variance per trait = target_total_variance.
     
     TRAIT COVARIANCE STRUCTURES (trace = P):
@@ -132,7 +132,7 @@ class VarDecSimulator:
 
     def _sample_and_scale(self, K, C_unit, target_var_per_trait, name="", debug=False):
         """
-        Sample from Kronecker and scale to target PER-TRAIT variance.
+        Sample from Kronecker and scale to target per-trait variance.
         
         Parameters
         --
@@ -160,7 +160,6 @@ class VarDecSimulator:
             scaled = raw
             scale = 1.0
         
-        # Verify
         achieved_var_per_trait = np.mean(np.var(scaled, axis=0))
         achieved_var_vec = np.var(scaled.flatten())
         
@@ -180,7 +179,7 @@ class VarDecSimulator:
             noise_prop=0.40,
             target_total_variance=1.0,
             scenario_id=None,
-            debug=True,
+            debug=False,
         ):
             """
             Simulate phenotypes.
@@ -255,7 +254,6 @@ class VarDecSimulator:
             Het = self._sample_and_scale(self.K, C_het_unit, var_het, "Het", debug)
             Noise = self._sample_and_scale(np.eye(self.N), C_noise_unit, var_noise, "Noise", debug)
 
-            # Combine
             Y = G + Het + Noise
 
             # Empirical Variances

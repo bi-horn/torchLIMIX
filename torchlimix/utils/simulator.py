@@ -38,7 +38,7 @@ class PhenoSimulator:
         # Dataset-specific parameter configurations
         self.DATASET_PARAMS = {
             'thaliana_horton': {
-                'v_s': 0.05,
+                'v_s': 0.15,
                 'v_bg': 0.50,
                 'alpha': 0.60,
                 'beta': 0.40,
@@ -82,7 +82,7 @@ class PhenoSimulator:
             base_seed = 100 + rep_idx
             print(f"[INFO] Using replicate-based base_seed: {base_seed} (rep_idx: {rep_idx})")
 
-        # SNP and region selection use the same seed (same genetic architecture)
+        # SNP and region selection 
         self.rng_snp_selection = np.random.default_rng(seed=42)    # For SNP selection
         self.rng_region_selection = np.random.default_rng(seed=42) # For region selection (same as SNP)
 
@@ -118,7 +118,7 @@ class PhenoSimulator:
 
     def selectRnd(self, n_sel, n_all, shape=None, rng=None):
         """
-        REFACTORED: Reproducibly select n_sel elements from n_all using specified RNG.
+        Reproducibly select n_sel elements from n_all using specified RNG.
 
         Parameters:
             n_sel: Number of True values
@@ -214,7 +214,7 @@ class PhenoSimulator:
 
         S_region = X.shape[1]  # Number of SNPs in region
 
-        # Ensure we have enough SNPs
+        # Check if we have enough SNPs
         ncausal = min(ncausal, S_region)
         if ncausal == 0:
             print("[WARN] No causal SNPs available")
@@ -266,11 +266,9 @@ class PhenoSimulator:
         if current_var_vec > 0:
             scaling_factor = np.sqrt(v_s / current_var_vec)
             S_region = S_raw * scaling_factor
-            #print(f"[INFO] Scaling factor: {scaling_factor:.6f}")
         else:
             S_region = S_raw
             scaling_factor = 1.0
-            #print("[WARN] Zero variance in raw effects, no scaling applied")
 
         # Verify final variances
         final_var_vec = np.var(S_region.flatten())
@@ -308,17 +306,15 @@ class PhenoSimulator:
                 # Model verification
                 "rescaling_pattern": [1.0] + [self.eta ** p for p in range(1, self.P)],
 
-                # Legacy compatibility
                 "snp_indices_global": global_causal_indices,
             }
-
             print(f"[INFO] Selected causal SNPs (global indices): {global_causal_indices}")
 
         return S_region, snp_info
 
     def gen_binormal(self, size, std=0.1, strategy="iid_binary", rng=None):
         """
-        REFACTORED: Generate effect sizes with specified RNG.
+        Generate effect sizes with specified RNG.
 
         Parameters:
         size: Number of effect sizes to generate
@@ -424,7 +420,7 @@ class PhenoSimulator:
 
                 sampling_success = True
                 for context_i in range(self.P):
-                    # Get available SNPs (exclude already used for diversity)
+                    # Get available SNPs 
                     available_snps = [i for i in range(n_snps) if i not in used_snps]
 
                     if len(available_snps) < ncausal:
@@ -462,7 +458,7 @@ class PhenoSimulator:
                     # S:,i = Gi @ bi (block diagonal structure)
                     polygenic_scores[context_i] = context_genotypes[context_i] @ effects
 
-                # Check correlation constraint (for 2-trait case)
+                # Check correlation constraint
                 if self.P >= 2 and rho_min is not None and rho_max is not None:
                     corr_01 = np.corrcoef(polygenic_scores[0], polygenic_scores[1])[0, 1]
 
@@ -647,7 +643,7 @@ class PhenoSimulator:
             "attempts_used": attempts,
         }
 
-        # Add global indices mapping (keep for backwards compatibility)
+        # Add global indices mapping
         snp_info["global_context_indices"] = global_context_indices
 
         # Add column names
@@ -657,7 +653,6 @@ class PhenoSimulator:
                 for trait_i in context_snps.keys()
             }
 
-        # delete if verified    
         if self.P >= 2:
             snp_info["context1_indices"] = heterogeneity_context_indices_global[0]
             snp_info["context2_indices"] = heterogeneity_context_indices_global[1]
@@ -701,7 +696,7 @@ class PhenoSimulator:
                 for i in range(sc):
                     for j in range(i + 1, sc):
                         r_squared = corr_matrix[i, j] ** 2
-                        if r_squared >= ld_threshold:  # Paper uses strict inequality
+                        if r_squared >= ld_threshold:  
                             valid = False
                             break
                     if not valid:
@@ -776,7 +771,7 @@ class PhenoSimulator:
 
         a_G = np.sqrt(alpha_G)  # a_G = √α_G - scalar
         c_G = np.sqrt(gamma_G)  # c_G = √γ_G - scalar
-        # Target variances from paper's allocation (equations 55-56)
+        # Target variance
         target_var_shared = alpha * v_bg        # var[vec(G^(s))] = α * v_bg
         target_var_indep = (1 - alpha) * v_bg   # var[vec(G^(i))] = (1-α) * v_bg
 
@@ -802,7 +797,7 @@ class PhenoSimulator:
             # Apply scalar c_G uniformly to all traits (creates diagonal covariance with equal variances)
             G_indep_raw = L @ (Z_indep * c_G)  # c_G broadcasts as same value to all traits
 
-            # Scale to achieve target variance (equation 56)
+            # Scale to achieve target variance
             current_var_indep = np.var(G_indep_raw.flatten())  # var[vec(G^(i))]
             if current_var_indep > 0:
                 scale_indep = np.sqrt(target_var_indep / current_var_indep)
@@ -812,7 +807,6 @@ class PhenoSimulator:
         else:
             G_indep = np.zeros((self.N, self.P))
 
-        # Verify final variances
         achieved_var_shared = np.var(G_shared.flatten())
         achieved_var_indep = np.var(G_indep.flatten())
         total_var_achieved = achieved_var_shared + achieved_var_indep
@@ -851,7 +845,7 @@ class PhenoSimulator:
         # Calculate residual variance
         v_residual = 1.0 - v_bg - v_s
 
-        # Target variances from paper's allocation (equations 57-58)
+        # Target variances
         target_var_shared = alpha * beta * v_residual      # var[vec(H^(s))]
         target_var_indep = (1 - alpha) * beta * v_residual # var[vec(H^(i))]
 
@@ -866,7 +860,7 @@ class PhenoSimulator:
             H_indep = np.zeros((self.N, self.P))
             return H_shared, H_indep
 
-        # Generate M ~ N(0,1) for covariance structure (equation 54)
+        # Generate M ~ N(0,1) for covariance structure 
         M = self.rng_hidden.standard_normal((self.N, n_hidden))
         MM_T = M @ M.T
 
@@ -881,7 +875,7 @@ class PhenoSimulator:
             U, s, _ = np.linalg.svd(MM_T_stable)
             L = U @ np.diag(np.sqrt(np.maximum(s, 1e-10)))
 
-        # Sample parameters as specified in paper (equation 53)
+        # Sample parameters 
         alpha_H = self.rng_hidden.uniform(0, 1)  # α_H ~ Uniform(0,1) - scalar
         gamma_H = self.rng_hidden.uniform(0, 1)  # γ_H ~ Uniform(0,1) - scalar
 
@@ -910,7 +904,7 @@ class PhenoSimulator:
             # Apply scalar c_H uniformly to all traits (creates diagonal covariance with equal variances)
             H_indep_raw = L @ (Z_indep * c_H)  # c_H broadcasts as same value to all traits
 
-            # Scale to achieve target variance (equation 58)
+            # Scale to achieve target variance 
             current_var_indep = np.var(H_indep_raw.flatten())  # var[vec(H^(i))]
             if current_var_indep > 0:
                 scale_indep = np.sqrt(target_var_indep / current_var_indep)
@@ -920,7 +914,6 @@ class PhenoSimulator:
         else:
             H_indep = np.zeros((self.N, self.P))
 
-        # Verify final variances
         achieved_var_shared = np.var(H_shared.flatten())
         achieved_var_indep = np.var(H_indep.flatten())
         total_var_achieved = achieved_var_shared + achieved_var_indep
@@ -947,7 +940,7 @@ class PhenoSimulator:
         Returns:
         Psi_indep: Independent noise component
         """
-        # Calculate target variance from paper's allocation (equation 59)
+        # Calculate target variance 
         v_residual = 1.0 - v_bg - v_s
         target_var_noise = (1 - beta) * v_residual  # var[vec(Ψ)]
 
@@ -1028,8 +1021,6 @@ class PhenoSimulator:
             Y: Phenotype DataFrame
             info: Dictionary with variance components and SNP information
         """
-
-        # Apply dataset-specific defaults for None parameters
         params = self.get_default_params()
 
         if v_s is None:
@@ -1089,7 +1080,7 @@ class PhenoSimulator:
         # Calculate residual variance (1 - v_s - v_bg)
         v_residual = max(0, 1.0 - v_s - v_bg)
 
-        # Hidden confounders - updated function signature
+        # Hidden confounders 
         H_shared, H_indep = self.gen_hidden_effects(
             v_s=v_s,
             v_bg=v_bg,
@@ -1098,7 +1089,7 @@ class PhenoSimulator:
             n_hidden=n_hidden
         )
 
-        # Residual noise - updated function signature
+        # Residual noise 
         Psi_indep = self.gen_noise_iid(
             v_s=v_s,
             v_bg=v_bg,
@@ -1109,7 +1100,7 @@ class PhenoSimulator:
         Y = S_region + G_shared + G_indep + H_shared + H_indep + Psi_indep
 
         if Y.ndim > 2:
-            Y = Y.squeeze()  # Remove singleton dimensions
+            Y = Y.squeeze() 
             print(f"[FIX] Squeezed Y to {Y.shape}")
 
         # Convert to DataFrame
@@ -1121,11 +1112,7 @@ class PhenoSimulator:
 
 
         if isinstance(Xr, pd.DataFrame):
-            # If Xr is a DataFrame, use its index
             Y_df = pd.DataFrame(Y, index=Xr.index, columns=trait_cols)
-            #print("[INFO] Created simulated phenotype with same index structure as genotype data")
-            #print(f"[DEBUG] Index type: {type(Y_df.index)}")
-            #print(f"[DEBUG] First 5 indices: {list(Y_df.index)[:5]}")
         else:
             if hasattr(self.X, 'index'):
                 Y_df = pd.DataFrame(Y, index=self.X.index[:len(Y)], columns=trait_cols)
@@ -1188,7 +1175,7 @@ class PhenoSimulator:
         print(f"  Total phenotype variance = {total_vec_var:.6f}")
         print(f"  Difference = {abs(total_vec_var - total_achieved):.6f}")
 
-        # Compile comprehensive information dictionary
+        # Info dictionary
         info = {
             # Effect matrices
             'S_region': S_region,
@@ -1239,7 +1226,7 @@ class PhenoSimulator:
                 'rescaling_common_indices': snp_info.get('common_indices_rescaling', []) if snp_info else [],
                 'eta': self.eta,
                 'ncausal': ncausal,
-                'n_traits': self.P,  # Add number of traits for StoreResults
+                'n_traits': self.P,  
             })
 
         return Y_df, info

@@ -21,13 +21,13 @@ data_param:
   batch_size: 0
   seed: 42 
   num_workers: 0
-  simulated: False
+  simulated: True
   rep_idx: 0
   num_samples: 250
-  eta: 0.5
+  eta: 0.3
   use_heterogeneity: False
   corr_bounds: 0
-  vardec_scenario: 3
+  vardec_scenario: 0
   num_tasks: 4
   ncausal: 1
   reference_trait: 0
@@ -42,7 +42,7 @@ data_param:
   
 gpus: 1 # 1 for "cuda" or 0 for "cpu"
 num_devices: 1
-
+seed: 100
 
 # python torchlimix --config torchlimix/configs/hyperparameters.yaml
 

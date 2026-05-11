@@ -93,10 +93,25 @@ def parse_args():
     )
     parser.add_argument("--annot_path", type=str, default=None, 
                         help="Path to SNP annotation file")
-    parser.add_argument("--cov_path", type=str, default=None, 
-                        help="Path to covariates file")
-    parser.add_argument("--batch_path", type=str, default=None, 
-                        help="Path to batch file (tab-delimited, first two columns: fid, iid)")
+    parser.add_argument(
+        "--cov_path", type=str, default=None,
+        help=(
+            "Path to covariates file (tab-delimited; first two columns: fid, iid). "
+            "Each remaining column is one covariate; multiple are supported. "
+            "Continuous columns are mean-centered, categorical columns are "
+            "dummy-encoded (auto-detected). All covariates are regressed from "
+            "every trait, with trait-specific coefficients."
+        ),
+    )
+    parser.add_argument(
+        "--batch_path", type=str, default=None,
+        help=(
+            "Path to per-trait batch file (tab-delimited; first two columns: fid, iid). "
+            "Each remaining column must be named after a phenotype trait and contain "
+            "that trait's batch labels (e.g. measurement date, field trial). "
+            "Traits without a matching column are skipped."
+        ),
+    )
     parser.add_argument(
         "--predict_geno_path", type=str, default=None,
         help=(
@@ -107,7 +122,9 @@ def parse_args():
             "delimited text (.csv, .tsv, .txt), or NumPy archive (.npz). "
             "SNP count must match the training genotypes."
         ),
-    )  
+    ) 
+    parser.add_argument("--predict_cov_path", type=str, default=None, 
+                    help="Path to covariates file for prediction genotypes") 
     # Covariate handling: mutually exclusive group
     cov_group = parser.add_mutually_exclusive_group()
     cov_group.add_argument("--regress_out_covariates", action="store_true", default=None,
@@ -461,6 +478,10 @@ def run_single_rep(config, args, rep_idx=None):
             logger.info("  Covariate file  : %s", args.cov_path)
         if args.batch_path:
             logger.info("  Batch file      : %s", args.batch_path)
+        if args.predict_geno_path:
+            logger.info("  New genotypes file for prediciton   : %s", args.predict_geno_path)
+        if args.predict_cov_path:
+            logger.info("  New covariate file for prediciton   : %s", args.predict_cov_path)
     logger.info("="*60)
 
     # Clear CUDA cache between reps to keep GPU memory tidy
@@ -480,6 +501,7 @@ def run_single_rep(config, args, rep_idx=None):
             batch_path=args.batch_path,
             cov_path=args.cov_path,
             predict_geno_path=getattr(args, 'predict_geno_path', None),
+            predict_cov_path=getattr(args, 'predict_cov_path', None),
         )
 
         if results is None or uid is None:
@@ -570,7 +592,7 @@ def main():
             run_simulation_batch(config, args)
         else:
             # Single-rep mode: use --rep_idx if given, otherwise whatever is in config
-            rep_idx = args.rep_idx  # may be None → run_single_rep will just use config value
+            rep_idx = args.rep_idx  
             run_single_rep(config, args, rep_idx=rep_idx)
         
         logger.info("Script completed successfully!")

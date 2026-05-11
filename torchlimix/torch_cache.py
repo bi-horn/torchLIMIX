@@ -10,11 +10,7 @@ import torch.nn as nn
 class ParameterVersionTracker:
     """
     Tracks versions of PyTorch parameters to detect changes.
-    
-    Uses multiple detection methods:
-    1. PyTorch's _version counter (for in-place ops like param.add_())
-    2. data_ptr() to detect storage changes
-    3. Fast checksum of parameter values (for param.data = ... assignments)
+
     """
     
     def __init__(self):

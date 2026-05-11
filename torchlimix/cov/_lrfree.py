@@ -34,7 +34,7 @@ class LRFreeFormCovTorch(TorchFunction, VersionedCacheMixin):
         if original_L_init:
             L_init = torch.ones(dim, rank, device=device, dtype=torch.double)
         else:
-            # QR initialization for better numerical properties when rank >= dim
+            # QR initialization
             rng = np.random.RandomState(0)
             Q, _ = np.linalg.qr(rng.randn(dim, rank))
             L_init = torch.from_numpy(Q).to(device=device, dtype=torch.double)
@@ -42,7 +42,6 @@ class LRFreeFormCovTorch(TorchFunction, VersionedCacheMixin):
         init = L_init.flatten()
         self.Lu = nn.Parameter(init)
         
-        # Track the parameter for automatic cache invalidation
         self._version_tracker.track("Lu", self.Lu)
         
         self.bounds = [(None, None)] * self.n_params
