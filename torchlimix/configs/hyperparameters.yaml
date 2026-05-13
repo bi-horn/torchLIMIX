@@ -25,7 +25,7 @@ data_param:
   rep_idx: 0
   num_samples: 250
   eta: 0.3
-  use_heterogeneity: False
+  use_heterogeneity: True
   corr_bounds: 0
   vardec_scenario: 0
   num_tasks: 4

@@ -808,16 +808,13 @@ def run_mt_lmm(
 
         results.save()
 
-    # Cleanup
     logger.info("Cleaning up memory...")
 
-    # Branch-specific tensors
     if analysis_type in ("gwas", "vardec"):
         del X_snp_all, G_stable
     elif analysis_type == "prediction":
         del Y_test
 
-    # Common cleanup 
     del Y_train
     if covariates is not None:
         del covariates

@@ -86,7 +86,7 @@ class StoreResults:
 
     Key features:
     - Null model (beta0) stored once via save_null_model().
-    - Per-SNP betas, likelihoods, and PVE stored as vectorised arrays.
+    - Per-SNP betas, and likelihoods stored as vectorised arrays.
     - Supports parquet (default for simulations) and CSV (default for real data).
     """
 
@@ -130,10 +130,17 @@ class StoreResults:
             len(self.heterogeneity_context_indices) if self.heterogeneity_context_indices else 2,
         )
 
-        # In-memory caches
+        # Heterogeneity correlation diagnostics (None for rescaling runs)
+        self.ld_threshold = self.simulation_info.get('ld_threshold', None)
+        self.attempts_used = self.simulation_info.get('attempts_used', None)
+        self.achieved_correlation_matrix = self.simulation_info.get('achieved_correlation_matrix', None)
+        self.achieved_pairwise_corrs = self.simulation_info.get('achieved_pairwise_correlations', None)
+        self.pairwise_corr_summary = self.simulation_info.get('pairwise_correlation_summary', None) or {}
+        self.correlation_satisfied_all_pairs = self.simulation_info.get('correlation_satisfied_all_pairs', None)
+        self.correlation_bounds_range = self.simulation_info.get('correlation_bounds_range', None)
+
         self._likelihood_data: Optional[np.ndarray] = None
         self._beta_df: Optional[pd.DataFrame] = None
-        self._pve_df: Optional[pd.DataFrame] = None
         self._null_model: Optional[Dict[str, Any]] = None
         self.covariance_results = {}
 
@@ -144,7 +151,6 @@ class StoreResults:
         ext = ".parquet" if self.use_parquet else ".csv"
         self.likelihood_path = os.path.join(self.base_dir, f"log_likelihoods{ext}")
         self.beta_path = os.path.join(self.base_dir, f"beta_results{ext}")
-        self.pve_path = os.path.join(self.base_dir, f"pve_results{ext}")
         self.null_model_path = os.path.join(self.base_dir, "null_model.csv")
         self.null_model_txt_path = os.path.join(self.base_dir, "null_model.txt")
         self.sim_params_csv_path = os.path.join(self.base_dir, "sim_params.csv")
@@ -188,7 +194,6 @@ class StoreResults:
                 "lrt21", "df21", "pv21",
                 "scale_H0",
             ]
-            self.pve_headers = ["pve1", "pve2"]
             self.beta_base_names = ["beta1", "beta1_se", "beta2", "beta2_se"]
         else:
             self.headers = [
@@ -196,7 +201,6 @@ class StoreResults:
                 "lrt10", "df10", "pv10",
                 "scale_H0",
             ]
-            self.pve_headers = ["pve1"]
             self.beta_base_names = ["beta1", "beta1_se"]
 
     def _build_sim_params_headers(self):
@@ -205,12 +209,29 @@ class StoreResults:
             base = (["rep_idx", "use_heterogeneity", "corr_bounds", "n_traits"]
                     if self.rep_idx is not None
                     else ["use_heterogeneity", "n_traits"])
-            return base + ctx + ["ncausal", "rank"]
+
+            # Realized correlation diagnostics
+            corr_diag = [
+                # Target range from the bin
+                "corr_rho_min", "corr_rho_max",
+                # Scalar summaries of realized P(P-1)/2 pairwise correlations
+                "achieved_corr_mean", "achieved_corr_median",
+                "achieved_corr_min", "achieved_corr_max",
+                "achieved_corr_std", "achieved_corr_mean_abs",
+                # Bin satisfaction
+                "n_pairs_in_range", "n_pairs_total", "all_pairs_in_range",
+                # Sampler diagnostics
+                "attempts_used", "ld_threshold",
+                # Full structure
+                "achieved_corr_matrix_json", "achieved_pairwise_corrs_json",
+            ]
+            return base + ctx + ["ncausal", "rank"] + corr_diag
+
         else:
             if self.rep_idx is not None:
                 return ["rep_idx", "use_heterogeneity", "rescaling_common_indices", "eta", "rank"]
             return ["use_heterogeneity", "rescaling_common_indices", "eta", "rank"]
-
+        
     # File initialisation 
     def _initialize_csv(self):
         if not os.path.exists(self.likelihood_path):
@@ -226,24 +247,55 @@ class StoreResults:
                 csv.writer(f).writerow(hdrs)
 
     def _initialize_sim_params_csv(self):
-        if os.path.exists(self.sim_params_csv_path):
-            return
         try:
+            row = self._build_sim_params_row()
+            if len(row) != len(self.sim_params_headers):
+                logger.error(
+                    f"sim_params row width mismatch: "
+                    f"{len(row)} values vs {len(self.sim_params_headers)} headers. "
+                    f"Padding with None."
+                )
+                # Pad or truncate to match
+                if len(row) < len(self.sim_params_headers):
+                    row = list(row) + [None] * (len(self.sim_params_headers) - len(row))
+                else:
+                    row = list(row)[:len(self.sim_params_headers)]
+
             with open(self.sim_params_csv_path, 'w', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow(self.sim_params_headers)
-                writer.writerow(self._build_sim_params_row())
+                writer.writerow(row)
         except Exception as e:
             logger.error(f"Failed to create sim_params CSV: {e}")
 
     def _build_sim_params_row(self):
         rank_val = int(self.rank) if self.rank is not None else 0
+
         if self.use_heterogeneity:
             context_indices = self._extract_context_indices()
             base = ([self.rep_idx, self.use_heterogeneity, self.corr_bounds, self.n_traits]
                     if self.rep_idx is not None
                     else [self.use_heterogeneity, self.n_traits])
-            return base + context_indices + [self.ncausal, rank_val]
+
+            s = self.pairwise_corr_summary or {}
+            rho_min = self.correlation_bounds_range[0] if self.correlation_bounds_range else None
+            rho_max = self.correlation_bounds_range[1] if self.correlation_bounds_range else None
+
+            corr_diag = [
+                rho_min, rho_max,
+                s.get("mean"), s.get("median"),
+                s.get("min"), s.get("max"),
+                s.get("std"), s.get("mean_abs"),
+                s.get("n_pairs_in_range"), s.get("n_pairs_total"),
+                self.correlation_satisfied_all_pairs,
+                self.attempts_used, self.ld_threshold,
+                json.dumps(self.achieved_correlation_matrix)
+                    if self.achieved_correlation_matrix is not None else None,
+                json.dumps(self.achieved_pairwise_corrs)
+                    if self.achieved_pairwise_corrs is not None else None,
+            ]
+            return base + context_indices + [self.ncausal, rank_val] + corr_diag
+
         else:
             eta = self.simulation_info.get('eta', None)
             rescaling = str(self.rescaling_common_indices) if self.rescaling_common_indices else "None"
@@ -478,42 +530,6 @@ class StoreResults:
             return pd.read_csv(self.beta_path)
         return pd.DataFrame()
 
-    # PVE storage (vectorised) 
-    def add_pve_result(self, snp_indices, pve1=None, pve2=None):
-        """Vectorised PVE storage — direct tensor→numpy, single write."""
-        if isinstance(snp_indices, (int, np.integer)):
-            ref = pve1 if pve1 is not None else pve2
-            size = ref.shape[0] if ref is not None else 0
-            snp_indices = np.arange(int(snp_indices), int(snp_indices) + size, dtype=np.int32)
-        else:
-            snp_indices = np.asarray(snp_indices, dtype=np.int32)
-        size = len(snp_indices)
-
-        columns = {"snp_index": snp_indices}
-        _add_columns_from_tensor(columns, "pve1", pve1, size)
-        if self.has_h2:
-            _add_columns_from_tensor(columns, "pve2", pve2, size)
-
-        df = pd.DataFrame(columns)
-        self._pve_df = df
-
-        if self.use_parquet:
-            df["snp_index"] = df["snp_index"].astype(np.int32)
-            float_cols = df.select_dtypes(include="float64").columns
-            df[float_cols] = df[float_cols].astype(np.float32)
-            df.to_parquet(self.pve_path, compression="zstd", index=False)
-        else:
-            df.to_csv(self.pve_path, index=False)
-
-    def pve(self):
-        if self._pve_df is not None:
-            return self._pve_df
-        if os.path.exists(self.pve_path):
-            if self.use_parquet:
-                return pd.read_parquet(self.pve_path)
-            return pd.read_csv(self.pve_path)
-        return pd.DataFrame()
-
     # Optimization metrics 
     def add_optimization_metrics(self, optimization_results):
         if optimization_results is None:
@@ -577,7 +593,6 @@ class StoreResults:
         return pd.DataFrame(columns=self.sim_params_headers)
 
     # Static helpers 
-
     @staticmethod
     def _compute_p_values(lrt_values, df_values):
         lrt = np.asarray(lrt_values, dtype=np.float64)
