@@ -336,7 +336,7 @@ class MultitaskDatasetSNP:
     Multi-task SNP dataset with phenotype/genotype loading, corrections, and QS decomposition.
     """
     
-    # Standard dataset configurations
+    # Standard dataset configurations for simulation
     STANDARD_DATASETS = {"thaliana_horton", "thaliana_1001"}
     
     def __init__(
@@ -503,13 +503,13 @@ class MultitaskDatasetSNP:
         self._create_splits()
         train_idx = np.asarray(self.split_indices['train'], dtype=np.int64)
 
-        self._apply_transformations(train_idx)    # fits on train, applies to all
-        self._compute_phenotype_stats()          
-
         if (self.correction_config.regress_batch or
             self.correction_config.regress_covariates or
             self.paths.cov):
             self._apply_corrections(train_idx)
+            
+        self._apply_transformations(train_idx)    # fits on train, applies to all
+        self._compute_phenotype_stats()          
 
         self._compute_qs()
         self._set_current_split()
@@ -572,7 +572,7 @@ class MultitaskDatasetSNP:
         geno_arr, index, bim = _load_genotype_file(self.paths.geno)
         gen_data = pd.DataFrame(geno_arr, index=index)
 
-        # Fill NaN with column means (no-op when there are none)
+        # Fill NaN with column means 
         if gen_data.isna().any().any():
             gen_data = gen_data.fillna(gen_data.mean())
 
@@ -729,7 +729,6 @@ class MultitaskDatasetSNP:
 
         df = self._set_fid_iid_index(df)
 
-        # Rename trait columns to generic names if they are still numeric
         trait_cols = [c for c in df.columns if c not in ('fid', 'iid')]
         rename_map = {}
         for i, c in enumerate(trait_cols):
@@ -801,11 +800,9 @@ class MultitaskDatasetSNP:
              are fid and iid.
           3. The index is already a MultiIndex with the right names.
         """
-        # Already indexed correctly
         if isinstance(df.index, pd.MultiIndex) and list(df.index.names) == ['fid', 'iid']:
             return df
 
-        # Normalise column names to lowercase for matching
         lower_cols = {str(c).lower(): c for c in df.columns}
 
         if 'fid' in lower_cols and 'iid' in lower_cols:
@@ -1077,7 +1074,6 @@ class MultitaskDatasetSNP:
             gc.collect()
             
         else:
-            # Compute normally if running real data (no simulator)
             num_samples = self.gen_data_standard.shape[0]
             dynamic_chunk = 100000 if num_samples <= 1000 else 1000
 
@@ -1478,11 +1474,6 @@ class SplitView:
         return getattr(self.master, name)
  
 class _FullBatchLoader:
-    """Drop-in replacement for DataLoader when using full-batch mode.
-
-    Iterating yields exactly one item: the pre-stacked full batch.
-    Exposes .dataset so downstream metadata code still works.
-    """
 
     def __init__(self, dataset: SplitView):
         self.dataset = dataset
@@ -1517,7 +1508,7 @@ def _build_metadata(
     data_path_config, dset, verbose,
 ) -> Dict[str, Any]:
     """
-    Extract metadata without keeping full DataFrames alive.
+    Extract metadata
     """
     try:
         sample_batch = next(iter(train_loader))
@@ -1602,7 +1593,6 @@ def _log_config(dset, data_path_config, pheno_path, geno_path,
     print("="*70 + "\n")
 
 
-
 def load_prediction_genotypes(
     path: str,
 ) -> Tuple[np.ndarray, pd.MultiIndex]:
@@ -1612,10 +1602,10 @@ def load_prediction_genotypes(
     ----------
     path : str
         File path.  The extension determines the reader:
-          .npz         → NumPy archive (keys: 'genotypes', 'fid', 'iid')
-          .bed         → PLINK binary  (reads .bed/.bim/.fam triplet)
-          .h5 / .hdf5  → HDF5          (datasets: 'genotypes', 'fid', 'iid')
-          .csv/.tsv/.txt → delimited text (fid, iid + SNP columns)
+          .npz              NumPy archive (keys: 'genotypes', 'fid', 'iid')
+          .bed              PLINK binary  (reads .bed/.bim/.fam triplet)
+          .h5 / .hdf5       HDF5          (datasets: 'genotypes', 'fid', 'iid')
+          .csv/.tsv/.txt    delimited text (fid, iid + SNP columns)
 
     Returns
     -------
@@ -1636,7 +1626,6 @@ def load_prediction_genotypes(
 
     geno, index, _ = _load_genotype_file(path, allow_npz=True)
 
-    # Ensure float64, fill NaN with column means
     geno = geno.astype(np.float64)
     nan_mask = np.isnan(geno)
     if nan_mask.any():
@@ -1675,7 +1664,7 @@ class PredictionSplitView:
         self.data_tensor = torch.full((n_new, n_tasks), float('nan'), dtype=torch.float64)
         self.abs_indices = torch.arange(n_new, dtype=torch.long)
 
-        # Optional external covariates — must match training column order/count
+        # Optional external covariates 
         self._has_covariates = False
         self.cov_tensor = None
         if predict_cov_path is not None:

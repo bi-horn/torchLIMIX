@@ -54,8 +54,6 @@ class VarDecMultiTrait:
             warnings.warn(f"VarDecMultiTrait: decomposition failed – {e}")
             self.failed = True
 
-    # ── helpers ───────────────────────────────────────────────────────────
-
     @staticmethod
     def _to_numpy(x) -> np.ndarray:
         """Convert torch tensor or array-like to numpy."""

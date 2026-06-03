@@ -382,7 +382,6 @@ class PredictionResultStore:
             'base_dir': self.base_dir,
         }
 
-        # Always: summary.json
         summary: Dict[str, Any] = {
             'metadata': self.metadata,
             'predictions': self.predictions,

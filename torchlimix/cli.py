@@ -125,6 +125,7 @@ def parse_args():
     ) 
     parser.add_argument("--predict_cov_path", type=str, default=None, 
                     help="Path to covariates file for prediction genotypes") 
+    
     # Covariate handling: mutually exclusive group
     cov_group = parser.add_mutually_exclusive_group()
     cov_group.add_argument("--regress_out_covariates", action="store_true", default=None,
@@ -184,7 +185,7 @@ def validate_args(args, config: Dict[str, Any]) -> None:
             simulated = False
             logger.warning(f"  Verified: config['data_param']['simulated'] = {config['data_param']['simulated']}")
     
-    # Validation 1: Check required paths for non-simulated data
+    # Check required paths for non-simulated data
     if not simulated:
         missing_paths = []
         if not args.pheno_path:
@@ -206,7 +207,7 @@ def validate_args(args, config: Dict[str, Any]) -> None:
             logger.error("="*60)
             raise ValueError(f"Missing required arguments: {', '.join(missing_paths)}")
     
-    # Validation 2: Covariate handling - mutually exclusive options
+    # Covariate handling (mutually exclusive options)
     if args.cov_path:
         regress_out = data_param.get("regress_out_covariates", False)
         include_in_model = data_param.get("include_covariates_in_model", False)
@@ -274,7 +275,7 @@ def validate_args(args, config: Dict[str, Any]) -> None:
         
         logger.info("="*60)
     
-    # Warning 3: Batch correction
+    # Warning: Batch correction
     if args.batch_path:
         logger.warning("="*60)
         logger.warning("BATCH CORRECTION ACTIVATED:")
@@ -283,14 +284,14 @@ def validate_args(args, config: Dict[str, Any]) -> None:
         logger.warning("  Batch effects will be regressed out from phenotypes")
         logger.warning("="*60)
     
-    # Warning 4: Conflicting correction settings
+    # Warning: Conflicting correction settings
     if args.batch_path and not data_param.get("regress_out_batch_effects", False):
         logger.warning("")
         logger.warning("Note: batch_path provided but regress_out_batch_effects is False in config.")
         logger.warning("Setting regress_out_batch_effects to True automatically.")
         logger.warning("")
 
-    # Validation: predict_geno_path requires prediction analysis
+    #  predict_geno_path requires prediction analysis
     if args.predict_geno_path:
         analysis = config.get("analysis", "gwas")
         if analysis != "prediction":
@@ -359,7 +360,6 @@ def load_config(config_path: str, args) -> Dict[str, Any]:
         "reference_trait": args.reference_trait,
     }
 
-    # After setting data_param values, add:
     config["eta"] = data_param.get("eta")
     config["corr_bounds"] = data_param.get("corr_bounds")
     config["use_heterogeneity"] = data_param.get("use_heterogeneity", False)

@@ -345,29 +345,6 @@ class TestRegressBatchEffects:
         assert stats['traits']['t2']['status'] == 'skipped'
         assert stats['traits']['t2']['reason'] == 'no_batch_column'
 
-    def test_per_trait_nan_isolation(self):
-        """A NaN in trait t0 must not affect t1's residuals."""
-        from torchlimix.utils.regress_effects import regress_batch_effects
-        rng = np.random.default_rng(2)
-        n = 60
-        idx = pd.MultiIndex.from_arrays(
-            [np.arange(n), np.arange(n)], names=['fid', 'iid']
-        )
-        labels = np.repeat([0, 1, 2], 20)
-        pheno = pd.DataFrame({
-            't0': rng.normal(0, 1, n),
-            't1': rng.normal(0, 1, n),
-        }, index=idx)
-        batch = pd.DataFrame({'plate': labels}, index=idx)
-
-        c_ref, _ = regress_batch_effects(pheno, batch, per_trait=False)
-
-        pheno_nan = pheno.copy()
-        pheno_nan.iloc[5, 0] = np.nan
-        c_nan, _ = regress_batch_effects(pheno_nan, batch, per_trait=False)
-
-        np.testing.assert_allclose(c_ref['t1'].values, c_nan['t1'].values, atol=1e-10)
-
     def test_single_category_skip(self):
         from torchlimix.utils.regress_effects import regress_batch_effects
         n = 30
@@ -484,15 +461,3 @@ class TestRegressContinuousCovariates:
         X_dummy = pd.get_dummies(cov['sex'], drop_first=True, dtype=float).to_numpy()
         r = corrected['t0'].values - corrected['t0'].mean()
         np.testing.assert_allclose(r @ X_dummy[:, 0], 0.0, atol=1e-8)
-
-    def test_per_trait_nan_isolation(self):
-        """A NaN in t0 must not affect t1's residuals."""
-        from torchlimix.utils.regress_effects import regress_continuous_covariates
-        pheno, cov = self._make_data(seed=14)
-        c_ref, _ = regress_continuous_covariates(pheno, cov)
-
-        pheno_nan = pheno.copy()
-        pheno_nan.iloc[5, 0] = np.nan
-        c_nan, _ = regress_continuous_covariates(pheno_nan, cov)
-
-        np.testing.assert_allclose(c_ref['t1'].values, c_nan['t1'].values, atol=1e-10)

@@ -173,7 +173,6 @@ class TestScenarioA:
 
         assert os.path.exists(_path(store, "summary.json"))
         assert os.path.exists(_path(store, "metrics.json"))
-        assert os.path.exists(_path(store, "tensors.npz"))
 
     def test_metrics_json_has_overall(self, tmp_dir, pred_tensors):
         store = _make_store(tmp_dir)
@@ -272,7 +271,7 @@ class TestScenarioB:
             torch.randn(10, 3),
             torch.abs(torch.randn(10, 3)) + 0.01,
         )
-        store.save(save_tensors=True)  # flag ignored for scenario B
+        store.save() 
 
         assert os.path.exists(_path(store, "summary.json"))
         assert not os.path.exists(_path(store, "metrics.json"))

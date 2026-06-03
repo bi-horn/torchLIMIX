@@ -138,14 +138,12 @@ def torch_rsolve(A: torch.Tensor, b: torch.Tensor,
         
     except (torch.linalg.LinAlgError, RuntimeError):
         try:
-            # Second attempt: Check if matrix is singular
             det = torch.linalg.det(A)
             if torch.abs(det) < 1e-14:
                 warnings.warn("Matrix is singular. Using pseudo-inverse.", RuntimeWarning)
                 A_pinv = torch.linalg.pinv(A, rcond=rcond)
                 return A_pinv @ b
             
-            # Third attempt: Use least squares if enabled
             if use_lstsq_fallback:
                 solution = torch.linalg.lstsq(A, b, rcond=rcond).solution
                 return solution
@@ -153,7 +151,6 @@ def torch_rsolve(A: torch.Tensor, b: torch.Tensor,
         except (torch.linalg.LinAlgError, RuntimeError):
             pass
     
-    # Final fallback: Return zeros
     msg = "All solver attempts failed. Setting solution to zero."
     warnings.warn(msg, RuntimeWarning)
     return torch.zeros(A.shape[0], dtype=original_dtype, device=A.device)
@@ -170,13 +167,11 @@ def torch_mdot(*args, debug: bool = False) -> torch.Tensor:
 
 def torch_ddot(a, b):
     """
-    Correct equivalent to numpy_sugar.linalg.ddot using PyTorch broadcasting.
+    Equivalent to numpy_sugar.linalg.ddot using PyTorch broadcasting.
     """
-    # Ensure they are tensors
     if not isinstance(a, torch.Tensor): a = torch.tensor(a)
     if not isinstance(b, torch.Tensor): b = torch.tensor(b)
 
-    # Determine which is the "diagonal" (the 1D vector)
     a_is_1d = a.ndim == 1
     b_is_1d = b.ndim == 1
 
@@ -184,12 +179,10 @@ def torch_ddot(a, b):
         raise ValueError("Inputs must consist of one 1D tensor and one 2D tensor")
 
     if a_is_1d:
-        # a is (N,), b is (N, M). 
-        # We need a to be (N, 1) to broadcast row-wise.
+        # a is (N,), b is (N, M)
         return a.view(-1, 1) * b
     else:
         # a is (N, M), b is (M,).
-        # b broadcasts automatically over the last dimension.
         return a * b
 
 
@@ -202,7 +195,6 @@ def torch_dot(a: torch.Tensor, b: torch.Tensor, debug: bool = False) -> torch.Te
     if a is None or b is None:
         return None
     
-    # Scalar cases
     if a.ndim == 0 or b.ndim == 0:
         return a * b
     
@@ -231,7 +223,6 @@ def torch_lu_factor(Z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """
     # Check for zero-sized matrix (sum(A.shape) == 0 in NumPy)
     if Z.shape[0] == 0 and Z.shape[1] == 0:
-        # Returns (zeros((0, 0)), zeros((0,), dtype="int32"))
         return (torch.zeros((0, 0), dtype=Z.dtype, device=Z.device), 
                 torch.zeros((0,), dtype=torch.int32, device=Z.device))
 
@@ -256,7 +247,7 @@ def torch_lu_solve(LU_and_piv: tuple, b: torch.Tensor, debug: bool = False) -> t
     LU, pivots = LU_and_piv
     
     # Equivalent to NumPy check: if A[0].shape[1] == 0 and b.shape[0] == 0:
-    # If the LU matrix is zero-sized, return a zero-sized result.
+    # If the LU matrix is zero-sized, return a zero-sized result
     if LU.shape[0] == 0:
         if b.ndim == 1:
             # Result shape (0,) for 1D input
@@ -310,8 +301,6 @@ def torch_lu_slogdet(LU_and_piv: tuple) -> tuple[torch.Tensor, torch.Tensor]:
     # Sign from diagonal
     sign = torch.prod(torch.sign(diag))
     
-    # Adjust sign based on number of row exchanges
-    # pivots are 0-based, count how many differ from their position
     n_exchanges = (pivots != torch.arange(pivots.size(0), device=pivots.device)).sum()
     if n_exchanges % 2 == 1:
         sign *= -1.0

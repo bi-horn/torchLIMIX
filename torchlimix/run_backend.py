@@ -8,7 +8,7 @@ import gc
 import numpy as np
 from typing import Dict
 import torch
-from torchlimix.utils.helper_functions import get_data_snp, stack_data_from_loaders
+from torchlimix.utils.helper_functions import get_data_snp
 from torchlimix.result_factory._store_results import StoreResults
 from torchlimix.result_factory._store_vardec_results import VarDecResults
 from torchlimix.result_factory._store_prediction_results import PredictionResultStore
@@ -68,7 +68,7 @@ def _get_test_config(test_type: str, p: int) -> Dict:
     configs = {
         "common":             {"scans": ["A1"],                        "dfs": {"10": 1}},
         "any":                {"scans": ["A1"],                        "dfs": {"10": p}},
-        "specific":           {"scans": ["A1"],                        "dfs": {"10": 2}},
+        "specific":           {"scans": ["A1"],                        "dfs": {"10": 1}},
         "specific_vs_common": {"scans": ["A0", "A1"],  "dfs": {"10": 1, "20": 2, "21": 1}},
         "any_vs_common":      {"scans": ["A0", "A1"],  "dfs": {"10": 1, "20": p, "21": p - 1}},
     }
@@ -386,7 +386,7 @@ def run_mt_lmm(
 
         covariates = _extract_covariates(train_idx)
 
-        # Free the SplitView copies the DataLoader was holding
+        # Free the SplitView copies 
         for loader in (tl, vl, ttl):
             if loader is not None and hasattr(loader, 'dataset'):
                 ds = loader.dataset
@@ -405,7 +405,7 @@ def run_mt_lmm(
         else:
             logger.info("Extracting Train and Test sets from master dataset...")
 
-        # Train: always from master, raw normalized genotypes 
+        # Train 
         train_idx   = torch.as_tensor(master.split_indices['train'], dtype=torch.long)
         Y_train     = master.df_tensor_full[train_idx].to(device)
         G_raw_train = master.gen_data_tensor_full[train_idx].to(device)
@@ -851,8 +851,6 @@ def run_main(config,
         cov_path: Path to covariate file (not stored in config)
         predict_geno_path: Path to new genotype file for prediction (not stored in config)
         predict_cov_path: Path to new covariate file for prediction; same dimension as num_samples for genotypes and covariates used in test set (not stored in config)
-    Note: All other parameters are read from config['data_param'].
-    File paths are passed separately because they're data-specific.
     """
     
     # Set random seed for reproducibility (before any data generation or computation)

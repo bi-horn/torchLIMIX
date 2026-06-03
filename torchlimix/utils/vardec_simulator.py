@@ -165,10 +165,10 @@ class VarDecSimulator:
         
         if debug:
             print(f"    {name}:")
-            print(f"      target (per-trait): {target_var_per_trait:.4f}")
-            print(f"      achieved (per-trait mean): {achieved_var_per_trait:.4f}")
-            print(f"      achieved var[vec]: {achieved_var_vec:.4f}")
-            print(f"      per-trait variances: {np.var(scaled, axis=0).round(4)}")
+            print(f"      Target (per-trait): {target_var_per_trait:.4f}")
+            print(f"      Achieved (per-trait mean): {achieved_var_per_trait:.4f}")
+            print(f"      Achieved var[vec]: {achieved_var_vec:.4f}")
+            print(f"      Per-trait variances: {np.var(scaled, axis=0).round(4)}")
         
         return scaled
 

@@ -6,7 +6,7 @@ torch.set_default_dtype(torch.float64)
 
 class PhenoSimulator:
     """
-    Refactored Phenotype Simulator for GxE effects simulation incorporating alpha-beta reasoning.
+    Phenotype Simulator for GxE effects simulation incorporating omega-gamma reasoning.
     """
 
     def __init__(self, dset, X, P=2, eta=1.0, rep_idx=None, chrom=None, pos=None, reference_trait=0, precomputed_kinship=None):
@@ -40,15 +40,15 @@ class PhenoSimulator:
             'thaliana_horton': {
                 'v_s': 0.15,
                 'v_bg': 0.50,
-                'alpha': 0.60,
-                'beta': 0.40,
+                'omega': 0.60,
+                'gamma': 0.40,
                 'description': 'Arabidopsis thaliana_horton - moderate QTL effects, strong population structure'
             },
             'thaliana_1001': {
                 'v_s': 0.15,
                 'v_bg': 0.50,
-                'alpha': 0.60,
-                'beta': 0.40,
+                'omega': 0.60,
+                'gamma': 0.40,
                 'description': 'Arabidopsis thaliana_horton - moderate QTL effects, strong population structure'
             }
         }
@@ -63,8 +63,8 @@ class PhenoSimulator:
         print(f"[INFO] Initialized simulator for {dset}")
         print(f"[INFO] {self.default_params['description']}")
         print(f"[INFO] Default parameters - v_s: {self.default_params['v_s']}, "
-              f"v_bg: {self.default_params['v_bg']}, alpha: {self.default_params['alpha']}, "
-              f"beta: {self.default_params['beta']}")
+              f"v_bg: {self.default_params['v_bg']}, omega: {self.default_params['omega']}, "
+              f"gamma: {self.default_params['gamma']}")
         
         self._initialize_rngs(rep_idx)
 
@@ -350,426 +350,284 @@ class PhenoSimulator:
             noise = rng.normal(0.0, std, size)
             return signs + noise
     
+ 
+    def _sample_ld_constrained_snps(self, X_context, sc, ld_threshold, seed):
+        """Return sc SNP indices from X_context with all pairwise r² < ld_threshold,
+        or None if the LD-pruned pool is too small."""
+        rng = np.random.default_rng(seed)
+        n = X_context.shape[1]
+        if sc == 1:
+            return [int(rng.integers(n))]
+
+        # Pairwise r²; NaN (from constant cols) treated as fully redundant.
+        with np.errstate(invalid="ignore", divide="ignore"):
+            r2 = np.corrcoef(X_context, rowvar=False) ** 2
+        r2 = np.where(np.isfinite(r2), r2, 1.0)
+        np.fill_diagonal(r2, 1.0)
+
+        # PLINK-style greedy prune in random order, then sample sc from the pool
+        keep = np.zeros(n, dtype=bool)
+        for idx in rng.permutation(n):
+            if not keep.any() or np.all(r2[idx, keep] < ld_threshold):
+                keep[idx] = True
+        pool = np.flatnonzero(keep)
+        if pool.size < sc:
+            return None
+        return rng.choice(pool, size=sc, replace=False).tolist()
+
     def gen_heterogeneous_effects(self, X, v_s=0.05, corr_bounds_idx=5,
-                                         return_snp_info=True, global_indices=None,
-                                         ncausal=2, ld_threshold=0.4, 
-                                         max_attempts=5000, use_per_trait_scaling=True):
+                                return_snp_info=True, global_indices=None,
+                                ncausal=2, ld_threshold=0.1,
+                                max_attempts=1000, use_per_trait_scaling=True):
+        """General-GxC heterogeneous effects.
+
+        Sample ncausal LD-pruned causal SNPs per context (all pairwise r² <
+        ld_threshold within each context), draw signs b_c ~ {-1,+1}, and reject
+        (SNP, sign) draws until corr(S:,i, S:,j) ∈ (rho_min, rho_max) for all i<j.
+
+        Raises ValueError if the LD constraint cannot be satisfied (either upfront
+        or after exhausting max_attempts).
         """
-        Generate heterogeneous effects 
+        CORRELATION_BOUNDS = [(-1.0,-0.8),(-0.8,-0.6),(-0.6,-0.4),(-0.4,-0.2),(-0.2, 0.0),
+                            ( 0.0, 0.2),( 0.2, 0.4),( 0.4, 0.6),( 0.6, 0.8),( 0.8, 1.0)]
 
-        - Independently sample sc causal variants in each of two contexts (total Sc = 2sc)
-        - LD constraint: all pairwise r² < 0.4 within each context
-        - Effect matrix: S = [G1 G2] * [[b1, 0], [0, b2]] where b1,b2 ~ {-1,+1}
-        - Correlation constraint: ρm < corr(S:,1, S:,2) < ρM
-        - Scaling: "rescaled each column of R to have variance 2%" (per-trait scaling)
-
-        Parameters:
-            ncausal: Number of causal variants per context 
-            use_per_trait_scaling: Whether to use per-trait scaling
-        """
-
+        # Degenerate case.
         if v_s <= 0:
             S = np.zeros((X.shape[0], self.P))
-            snp_info = {"heterogeneity_context_indices": [[] for _ in range(self.P)]} if return_snp_info else None
-            return S, snp_info
+            info = ({"heterogeneity_context_indices": [[] for _ in range(self.P)]}
+                    if return_snp_info else None)
+            return S, info
 
-        print(f"[INFO] Generating General-GxC effects")
-        print(f"[INFO] sc = {ncausal} causal variants per context")
-        print(f"[INFO] Total causal variants: Sc = {self.P}*{ncausal} = {self.P * ncausal}")
-        print(f"[INFO] LD threshold: r² < {ld_threshold}")
-        print(f"[INFO] Per-trait scaling: {use_per_trait_scaling}")
-
-        # Handle pandas DataFrame
+        # Normalize input.
         if isinstance(X, pd.DataFrame):
-            X_values = X.values
-            column_names = X.columns.tolist()
+            X_values, column_names = X.values, X.columns.tolist()
         else:
-            X_values = X
-            column_names = None
-
+            X_values, column_names = X, None
         n_samples, n_snps = X_values.shape
 
-        # Correlation bounds for two-trait case
-        CORRELATION_BOUNDS_LIST = [
-            (-1.0, -0.8), (-0.8, -0.6), (-0.6, -0.4), (-0.4, -0.2), (-0.2, -0.0),
-            (-0.0, 0.2), (0.2, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 1.0)
-        ]
-
         if self.P >= 2:
-            rho_min, rho_max = CORRELATION_BOUNDS_LIST[corr_bounds_idx]
-            print(f"[INFO] Correlation constraint: {rho_min:.2f} < corr(S:,1, S:,2) < {rho_max:.2f}")
+            rho_min, rho_max = CORRELATION_BOUNDS[corr_bounds_idx]
         else:
             rho_min = rho_max = None
-            print(f"[INFO] Single trait - no correlation constraints")
 
-        # Check sufficient SNPs
-        total_causal = self.P * ncausal
-        if total_causal > n_snps:
-            raise ValueError(f"Need at least {total_causal} SNPs for {ncausal} variants per context across {self.P} traits")
+        print(f"[INFO] General-GxC: P={self.P}, ncausal/context={ncausal}, "
+            f"total={self.P * ncausal}, r²<{ld_threshold}, per-trait={use_per_trait_scaling}")
+        if self.P >= 2:
+            print(f"[INFO] Correlation bound: ({rho_min:.2f}, {rho_max:.2f})")
 
-        best_config = None
-        best_score = float('inf')
+        if self.P * ncausal > n_snps:
+            raise ValueError(f"Need ≥{self.P * ncausal} SNPs; region has {n_snps}.")
+        
+        if self._sample_ld_constrained_snps(X_values, ncausal, ld_threshold, seed=0) is None:
+            raise ValueError(
+                f"LD constraint r²<{ld_threshold} infeasible: cannot find "
+                f"{ncausal} LD-pruned SNPs in this region ({n_snps} SNPs). "
+                f"Loosen ld_threshold, enlarge the region, or reduce ncausal."
+            )
+
+        # Rejection loop over (SNP choice, signs); count LD vs correlation failures.
+        best_config, best_violation = None, float("inf")
+        ld_failures = 0
 
         for attempt in range(max_attempts):
-            try:
-                # Sample LD-constrained SNPs for each context independently
-                context_snps = {}
-                context_genotypes = {}
-                used_snps = set()
+            context_snps, context_effects, pgs_cols = {}, {}, []
+            ok = True
+            used = set()
+            for c in range(self.P):
+                avail = [i for i in range(n_snps) if i not in used]
+                if len(avail) < ncausal:
+                    avail = list(range(n_snps))
+                picks = self._sample_ld_constrained_snps(
+                    X_values[:, avail], ncausal, ld_threshold,
+                    seed=attempt * self.P + c,
+                )
+                if picks is None:
+                    ld_failures += 1
+                    ok = False
+                    break
+                picks = [avail[i] for i in picks]
+                b = 2 * (self.rng_effect_sizes.random(ncausal) > 0.5) - 1
+                context_snps[c] = picks
+                context_effects[c] = b
+                pgs_cols.append(X_values[:, picks] @ b)
+                used.update(picks)
+            if not ok:
+                continue
 
-                sampling_success = True
-                for context_i in range(self.P):
-                    # Get available SNPs (exclude already used for diversity)
-                    available_snps = [i for i in range(n_snps) if i not in used_snps]
-
-                    if len(available_snps) < ncausal:
-                        # Allow overlap if not enough SNPs
-                        available_snps = list(range(n_snps))
-
-                    # Sample LD-constrained SNPs
-                    context_snp_indices = self._sample_ld_constrained_snps(
-                        X_values[:, available_snps], ncausal, ld_threshold,
-                        attempt * self.P + context_i
-                    )
-
-                    if context_snp_indices is None:
-                        sampling_success = False
-                        break
-                    
-                    # Map back to original indices
-                    context_snp_indices = [available_snps[i] for i in context_snp_indices]
-                    context_snps[context_i] = context_snp_indices
-                    context_genotypes[context_i] = X_values[:, context_snp_indices]
-                    used_snps.update(context_snp_indices)
-
-                if not sampling_success:
-                    continue
-                
-                # Sample effect sizes following b1,b2 ~ {-1,+1}
-                context_effects = {}
-                polygenic_scores = {}
-
-                for context_i in range(self.P):
-                    # b1,b2 iid ~ {-1,+1}
-                    effects = 2 * (self.rng_effect_sizes.random(ncausal) > 0.5) - 1
-                    context_effects[context_i] = effects
-
-                    # S:,i = Gi @ bi (block diagonal structure)
-                    polygenic_scores[context_i] = context_genotypes[context_i] @ effects
-
-                # Check correlation constraint across all trait pairs
-                if self.P >= 2 and rho_min is not None and rho_max is not None:
-                    pgs_matrix = np.column_stack([polygenic_scores[i] for i in range(self.P)])
-                    corr_matrix = np.corrcoef(pgs_matrix.T)
-                    
-                    # Extract all P(P-1)/2 pairwise correlations
-                    upper_tri_idx = np.triu_indices(self.P, k=1)
-                    pairwise_corrs = corr_matrix[upper_tri_idx]
-                    
-                    # All pairs must satisfy the bound
-                    in_range = (rho_min < pairwise_corrs) & (pairwise_corrs < rho_max)
-                    
-                    if not np.all(in_range):
-                        # Violation = max distance from valid range across all pairs
-                        below = np.maximum(rho_min - pairwise_corrs, 0)
-                        above = np.maximum(pairwise_corrs - rho_max, 0)
-                        violation = np.max(below + above)
-                        
-                        if violation < best_score:
-                            best_score = violation
-                            best_config = {
-                                'context_snps': context_snps,
-                                'context_effects': context_effects,
-                                'polygenic_scores': polygenic_scores,
-                                'correlation': corr_matrix,  # store full matrix now
-                                'pairwise_corrs': pairwise_corrs,
-                                'attempt': attempt
-                            }
-                        continue
-                    
-                print(f"[SUCCESS] Found valid configuration after {attempt + 1} attempts")
-                if self.P >= 2:
-                    pgs_matrix = np.column_stack([polygenic_scores[i] for i in range(self.P)])
-                    corr_matrix = np.corrcoef(pgs_matrix.T)
-                    pairwise_corrs = corr_matrix[np.triu_indices(self.P, k=1)]
-                    print(f"[INFO] Achieved pairwise correlations: {pairwise_corrs}")
-                    print(f"[INFO] Min: {pairwise_corrs.min():.4f}, Max: {pairwise_corrs.max():.4f}, Mean: {pairwise_corrs.mean():.4f}")
-
-                final_config = {
-                    'context_snps': context_snps,
-                    'context_effects': context_effects,
-                    'polygenic_scores': polygenic_scores,
-                    'correlation': corr_matrix if self.P >= 2 else None,
-                    'pairwise_corrs': pairwise_corrs if self.P >= 2 else None,
-                    'attempt': attempt + 1
-                }
+            if self.P < 2:
+                best_config = dict(context_snps=context_snps,
+                                context_effects=context_effects,
+                                correlation=None, pairwise_corrs=None,
+                                attempt=attempt + 1)
                 break
 
-            except Exception as e:
-                continue
+            pgs = np.column_stack(pgs_cols)
+            corr = np.corrcoef(pgs, rowvar=False)
+            pairwise = corr[np.triu_indices(self.P, k=1)]
+            below = np.maximum(rho_min - pairwise, 0)
+            above = np.maximum(pairwise - rho_max, 0)
+            violation = float((below + above).max())
+
+            if violation == 0:
+                best_config = dict(context_snps=context_snps,
+                                context_effects=context_effects,
+                                correlation=corr, pairwise_corrs=pairwise,
+                                attempt=attempt + 1)
+                print(f"[SUCCESS] Valid config after {attempt+1} attempts "
+                    f"(LD failures: {ld_failures}); "
+                    f"pairwise ∈ [{pairwise.min():.3f}, {pairwise.max():.3f}]")
+                break
+
+            if violation < best_violation:
+                best_violation = violation
+                best_config = dict(context_snps=context_snps,
+                                context_effects=context_effects,
+                                correlation=corr, pairwise_corrs=pairwise,
+                                attempt=attempt + 1)
         else:
-            if best_config is not None:
-                print(f"[WARNING] Using best configuration with violation {best_score:.4f}")
-                final_config = best_config
-            else:
-                raise ValueError(f"No valid configuration found after {max_attempts} attempts")
+            # Loop exhausted without an exact-fit config. Distinguish causes.
+            if best_config is None:
+                # Every attempt failed at the LD stage (no signs ever drawn).
+                raise ValueError(
+                    f"LD constraint r²<{ld_threshold} failed on every one of "
+                    f"{max_attempts} attempts ({ld_failures} LD failures). "
+                    f"This region is too LD-dense for {ncausal} causal SNPs "
+                    f"per context. Loosen ld_threshold or enlarge the region."
+                )
+            # LD succeeded sometimes; correlation constraint is what couldn't be met.
+            print(f"[WARN] Using best-effort config (correlation violation="
+                f"{best_violation:.4f}; LD failures during search: "
+                f"{ld_failures}/{max_attempts})")
 
-        # Construct effect matrix S following block diagonal structure
-        S_raw = np.zeros((n_samples, self.P))
+        # Build effect matrix S[:,c] = G_c @ b_c.
+        S_raw = np.column_stack([
+            X_values[:, best_config["context_snps"][c]] @ best_config["context_effects"][c]
+            for c in range(self.P)
+        ])
 
-        for trait_i in range(self.P):
-            # S:,i = Gi @ bi
-            G_i = X_values[:, final_config['context_snps'][trait_i]]
-            b_i = final_config['context_effects'][trait_i]
-            S_raw[:, trait_i] = G_i @ b_i
-
+        # Scale to target variance.
         if use_per_trait_scaling:
-            S_scaled = S_raw.copy()
-            per_trait_target_var = v_s  # Each column gets variance v_s
-
-            for trait_i in range(self.P):
-                current_var = np.var(S_raw[:, trait_i])
-                if current_var > 0:
-                    scale_factor = np.sqrt(per_trait_target_var / current_var)
-                    S_scaled[:, trait_i] = S_raw[:, trait_i] * scale_factor
-
+            S_scaled = np.zeros_like(S_raw)
+            for c in range(self.P):
+                v = S_raw[:, c].var()
+                S_scaled[:, c] = S_raw[:, c] * np.sqrt(v_s / v) if v > 0 else S_raw[:, c]
             print(f"[INFO] Per-trait scaling: each trait variance = {v_s:.4f}")
-            print(f"[INFO] Total variance var[vec(S)] = {np.var(S_scaled.flatten()):.4f}")
-
         else:
-            # Original vectorized scaling: var[vec(S)] = v_s
-            S_scaled = self._scale_to_target_variance(S_raw, v_s)
+            v = S_raw.flatten().var()
+            S_scaled = S_raw * np.sqrt(v_s / v) if v > 0 else S_raw.copy()
             print(f"[INFO] Vectorized scaling: var[vec(S)] = {v_s:.4f}")
 
-        # Verify final properties
+        print(f"[INFO] Per-trait variances: {[float(S_scaled[:, c].var()) for c in range(self.P)]}")
         if self.P >= 2:
-            final_corr = np.corrcoef(S_scaled[:, 0], S_scaled[:, 1])[0, 1]
-            print(f"[INFO] Final correlation after scaling: {final_corr:.4f}")
+            print(f"[INFO] Final corr(S:,0, S:,1): "
+                f"{np.corrcoef(S_scaled[:, 0], S_scaled[:, 1])[0, 1]:.4f}")
 
-        per_trait_vars = [np.var(S_scaled[:, i]) for i in range(self.P)]
-        print(f"[INFO] Final per-trait variances: {per_trait_vars}")
-
-        # Create SNP info
+        # Build snp_info (schema preserved).
         snp_info = None
         if return_snp_info:
             snp_info = self._create_heterogeneity_snp_info(
-                final_config['context_snps'], final_config['context_effects'],
-                final_config.get('correlation'),  # now a P×P matrix
-                final_config.get('pairwise_corrs'),  # new: vector of P(P-1)/2 pairwise corrs
+                best_config["context_snps"], best_config["context_effects"],
+                best_config.get("correlation"), best_config.get("pairwise_corrs"),
                 (rho_min, rho_max) if self.P >= 2 else None,
-                final_config['attempt'], global_indices, v_s, S_scaled,
-                column_names, ncausal, use_per_trait_scaling
+                best_config["attempt"], global_indices, v_s, S_scaled,
+                column_names, ncausal, use_per_trait_scaling, ld_threshold,
             )
+        return S_scaled, snp_info
 
-        return S_scaled, snp_info
-    
-    def _build_heterogeneity_result(self, X_values, n_samples, context_snps, context_effects, 
-                                   achieved_correlations, correlation_constraints, attempts_used,
-                                   global_indices, v_s, column_names):
-        """
-        Helper function to build the final result for P-trait heterogeneous effects.
-        """
-        
-        # Build effect matrix S (N x P)
-        # S[:,i] = G_i @ b_i for each trait i
-        S_candidate = np.zeros((n_samples, self.P))
-        
-        for trait_i in range(self.P):
-            if trait_i in context_snps and trait_i in context_effects:
-                # Extract genotype matrix for this context
-                G_i = X_values[:, context_snps[trait_i]]
-                b_i = context_effects[trait_i]
-                
-                # Calculate polygenic effect: S[:,i] = G_i @ b_i
-                S_candidate[:, trait_i] = G_i @ b_i
-            else:
-                print(f"[WARN] Missing context {trait_i}, filling with zeros")
-                S_candidate[:, trait_i] = 0.0
-        
-        # Scale to target variance
-        S_scaled = self._scale_to_target_variance(S_candidate, v_s)
-        
-        snp_info = self._create_heterogeneity_snp_info(
-            context_snps, context_effects, achieved_correlations, correlation_constraints,
-            attempts_used, global_indices, v_s, S_scaled, column_names
-        )
-        
-        return S_scaled, snp_info
-    
     def _create_heterogeneity_snp_info(self, context_snps, context_effects,
-                                            correlation_matrix, pairwise_corrs,
-                                            corr_bounds, attempts,
-                                            global_indices, v_s, S_scaled,
-                                            column_names, ncausal,
-                                            use_per_trait_scaling):
-        """Create SNP info."""
+                                    correlation_matrix, pairwise_corrs,
+                                    corr_bounds, attempts, global_indices,
+                                    v_s, S_scaled, column_names, ncausal,
+                                    use_per_trait_scaling, ld_threshold):
+        """Build snp_info dict for heterogeneous-effects simulation. Schema unchanged."""
 
-        # Convert local indices to global indices
+        # Local → global index mapping.
         if global_indices is not None:
-            global_context_indices = {
-                trait_i: [global_indices[local_idx] for local_idx in local_indices]
-                for trait_i, local_indices in context_snps.items()
-            }
-            heterogeneity_context_indices_global = [
-                global_context_indices.get(i, []) for i in range(self.P)
-            ]
+            global_context_indices = {c: [global_indices[i] for i in idx]
+                                    for c, idx in context_snps.items()}
         else:
             global_context_indices = context_snps
-            heterogeneity_context_indices_global = [
-                context_snps.get(i, []) for i in range(self.P)
-            ]
+        het_global = [global_context_indices.get(i, []) for i in range(self.P)]
 
-        # Compute correlation satisfaction across ALL pairs
+        # Correlation satisfaction across all pairs.
         correlation_satisfied = None
         if pairwise_corrs is not None and corr_bounds is not None:
             rho_min, rho_max = corr_bounds
-            in_range = (rho_min < pairwise_corrs) & (pairwise_corrs < rho_max)
-            correlation_satisfied = bool(np.all(in_range))
+            correlation_satisfied = bool(np.all((rho_min < pairwise_corrs)
+                                                & (pairwise_corrs < rho_max)))
 
-        # Pairwise summary stats
+        # Pairwise summary stats.
+        pairwise_summary = None
         if pairwise_corrs is not None and len(pairwise_corrs) > 0:
             pairwise_summary = {
-                "min": float(np.min(pairwise_corrs)),
-                "max": float(np.max(pairwise_corrs)),
-                "mean": float(np.mean(pairwise_corrs)),
-                "median": float(np.median(pairwise_corrs)),
-                "std": float(np.std(pairwise_corrs)),
+                "min":      float(np.min(pairwise_corrs)),
+                "max":      float(np.max(pairwise_corrs)),
+                "mean":     float(np.mean(pairwise_corrs)),
+                "median":   float(np.median(pairwise_corrs)),
+                "std":      float(np.std(pairwise_corrs)),
                 "mean_abs": float(np.mean(np.abs(pairwise_corrs))),
-                "n_pairs_in_range": int(np.sum(
-                    (corr_bounds[0] < pairwise_corrs) & (pairwise_corrs < corr_bounds[1])
-                )) if corr_bounds is not None else None,
+                "n_pairs_in_range": (int(np.sum((corr_bounds[0] < pairwise_corrs)
+                                                & (pairwise_corrs < corr_bounds[1])))
+                                    if corr_bounds is not None else None),
                 "n_pairs_total": int(len(pairwise_corrs)),
             }
-        else:
-            pairwise_summary = None
 
         snp_info = {
-            # Paper-specific parameters
             "model_type": "general_gxc",
             "total_causal_variants": self.P * ncausal,
-            "ld_threshold": 0.4,
+            "ld_threshold": float(ld_threshold),
             "per_trait_scaling": use_per_trait_scaling,
 
-            # Context information
             "context_snp_indices": global_context_indices,
             "context_effect_sizes": {k: v.tolist() for k, v in context_effects.items()},
             "n_traits": self.P,
 
-            # Main heterogeneity field
-            "heterogeneity_context_indices": heterogeneity_context_indices_global,
+            "heterogeneity_context_indices": het_global,
             "ncausal": ncausal,
+            "local_context_indices": dict(context_snps),
+            "heterogeneity_context_indices_local": [context_snps.get(i, []) for i in range(self.P)],
 
-            "local_context_indices": {
-                trait_i: local_indices for trait_i, local_indices in context_snps.items()
-            },
-            "heterogeneity_context_indices_local": [
-                context_snps.get(i, []) for i in range(self.P)
-            ],
-
-            # Correlation information — now full matrix + all pairs
-            "achieved_correlation_matrix": (
-                correlation_matrix.tolist() if correlation_matrix is not None else None
-            ),
-            "achieved_pairwise_correlations": (
-                pairwise_corrs.tolist() if pairwise_corrs is not None else None
-            ),
+            "achieved_correlation_matrix": (correlation_matrix.tolist()
+                                            if correlation_matrix is not None else None),
+            "achieved_pairwise_correlations": (pairwise_corrs.tolist()
+                                            if pairwise_corrs is not None else None),
             "pairwise_correlation_summary": pairwise_summary,
             "correlation_bounds": corr_bounds,
             "correlation_satisfied_all_pairs": correlation_satisfied,
+            "achieved_correlation": (float(correlation_matrix[0, 1])
+                                    if correlation_matrix is not None else None),
 
-            # Backwards-compatible scalar field: cor(trait 0, trait 1)
-            "achieved_correlation": (
-                float(correlation_matrix[0, 1]) if correlation_matrix is not None else None
-            ),
-
-            # Variance information
             "target_variance": v_s,
-            "final_variance_vec": np.var(S_scaled.flatten()),
-            "per_trait_variances": [np.var(S_scaled[:, i]) for i in range(self.P)],
+            "final_variance_vec": float(np.var(S_scaled.flatten())),
+            "per_trait_variances": [float(np.var(S_scaled[:, i])) for i in range(self.P)],
 
-            # Sampling information
             "attempts_used": attempts,
+            "global_context_indices": global_context_indices,
         }
 
-        snp_info["global_context_indices"] = global_context_indices
-
         if column_names is not None:
-            snp_info["context_snp_names"] = {
-                trait_i: [column_names[local_idx] for local_idx in context_snps[trait_i]]
-                for trait_i in context_snps.keys()
-            }
-
+            snp_info["context_snp_names"] = {c: [column_names[i] for i in context_snps[c]]
+                                            for c in context_snps}
         if self.P >= 2:
-            snp_info["context1_indices"] = heterogeneity_context_indices_global[0]
-            snp_info["context2_indices"] = heterogeneity_context_indices_global[1]
-
+            snp_info["context1_indices"] = het_global[0]
+            snp_info["context2_indices"] = het_global[1]
         return snp_info
-    
-    def _scale_to_target_variance(self, S, target_var):
-        """Scale effect matrix to achieve target variance var[vec(S)] = target_var."""
-        current_var = np.var(S.flatten())
-        
-        if current_var > 0:
-            scale_factor = np.sqrt(target_var / current_var)
-            S_scaled = S * scale_factor
-            
-            # Verify scaling
-            final_var = np.var(S_scaled.flatten())
-            print(f"[INFO] Variance scaling: {current_var:.6f} → {final_var:.6f} (target: {target_var:.6f})")
-            
-            return S_scaled
-        else:
-            print("[WARN] Zero variance in effects, no scaling applied")
-            return S
 
-    def _sample_ld_constrained_snps(self, X_context, sc, ld_threshold, seed):
-        """Sample sc SNPs with all pairwise r² < ld_threshold."""
-        rng = np.random.default_rng(seed)
-        n_snps = X_context.shape[1]
-
-        if sc == 1:
-            return [rng.choice(n_snps)]
-
-        for _ in range(1000):  # Try up to 1000 times
-            candidate_indices = rng.choice(n_snps, size=sc, replace=False)
-            candidate_genos = X_context[:, candidate_indices]
-
-            try:
-                corr_matrix = np.corrcoef(candidate_genos.T)
-
-                # Check all pairwise squared correlations
-                valid = True
-                for i in range(sc):
-                    for j in range(i + 1, sc):
-                        r_squared = corr_matrix[i, j] ** 2
-                        if r_squared >= ld_threshold:  
-                            valid = False
-                            break
-                    if not valid:
-                        break
-                    
-                if valid:
-                    return candidate_indices.tolist()
-
-            except Exception:
-                continue 
-        return None  
-
-    def gen_background_effects(self, v_bg, alpha, use_XX=True):
+    def gen_background_effects(self, v_bg, omega, use_XX=True):
         """
-        Generate background genetic effects.
+        Generate background genetic effects
 
         G = G^(s) + G^(i)
-        G^(s) ~ MVN(0, R, a_G a_G^T)  where a_G = √α_G, α_G ~ Uniform(0,1)
-        G^(i) ~ MVN(0, R, diag(c_G^2))  where c_G = √γ_G, γ_G ~ Uniform(0,1)
+        G^(s) ~ MN(0, R, a_G a_G^T)  where a_G = √τ_{G,s}, τ_{G,s} ~ Uniform(0,1)
+        G^(i) ~ MN(0, R, diag(c_G^2))  where c_G = √τ_{G,i}, τ_{G,i} ~ Uniform(0,1)
 
         Variance allocation 
-        var[vec(G^(s))] = α * v_bg
-        var[vec(G^(i))] = (1-α) * v_bg
+        var[vec(G^(s))] = ω * v_bg
+        var[vec(G^(i))] = (1-ω) * v_bg
 
         Parameters:
         v_bg: Total variance explained by background effects
-        alpha: Fraction of shared signal 
+        omega: Fraction of shared signal
         use_XX: Whether to use kinship matrix as R
 
         Returns:
@@ -809,18 +667,18 @@ class PhenoSimulator:
             U, s, _ = np.linalg.svd(R_stable)
             L = U @ np.diag(np.sqrt(np.maximum(s, 1e-10)))
 
-        # Sample parameters 
-        # Both α_G and γ_G are scalars
-        alpha_G = self.rng_background.uniform(0, 1)  # α_G ~ Uniform(0,1) - scalar
-        gamma_G = self.rng_background.uniform(0, 1)  # γ_G ~ Uniform(0,1) - scalar
+        # Sample structural parameters (scalars)
+        tau_G_s = self.rng_background.uniform(0, 1)  # τ_{G,s} ~ Uniform(0,1)
+        tau_G_i = self.rng_background.uniform(0, 1)  # τ_{G,i} ~ Uniform(0,1)
 
-        a_G = np.sqrt(alpha_G)  # a_G = √α_G - scalar
-        c_G = np.sqrt(gamma_G)  # c_G = √γ_G - scalar
-        # Target variance
-        target_var_shared = alpha * v_bg        # var[vec(G^(s))] = α * v_bg
-        target_var_indep = (1 - alpha) * v_bg   # var[vec(G^(i))] = (1-α) * v_bg
+        a_G = np.sqrt(tau_G_s)  # a_G = √τ_{G,s}
+        c_G = np.sqrt(tau_G_i)  # c_G = √τ_{G,i}
+        
+        # Target variances 
+        target_var_shared = omega * v_bg        # var[vec(G^(s))] = ω * v_bg
+        target_var_indep = (1 - omega) * v_bg   # var[vec(G^(i))] = (1-ω) * v_bg
 
-        # Generate shared component: G^(s) ~ MVN(0, R, a_G a_G^T)
+        # Generate shared component: G^(s) ~ MN(0, R, a_G a_G^T)
         if target_var_shared > 0:
             z_shared = self.rng_background.standard_normal(self.N)
             spatial_shared = L @ z_shared  # Apply spatial correlation R
@@ -836,10 +694,10 @@ class PhenoSimulator:
         else:
             G_shared = np.zeros((self.N, self.P))
 
-        # Generate independent component: G^(i) ~ MVN(0, R, diag(c_G^2))
+        # Generate independent component: G^(i) ~ MN(0, R, diag(c_G^2))
         if target_var_indep > 0:
             Z_indep = self.rng_background.standard_normal((self.N, self.P))
-            # Apply scalar c_G uniformly to all traits 
+            # Apply scalar c_G uniformly to all traits (creates diagonal covariance with equal variances)
             G_indep_raw = L @ (Z_indep * c_G)  # c_G broadcasts as same value to all traits
 
             # Scale to achieve target variance
@@ -852,6 +710,7 @@ class PhenoSimulator:
         else:
             G_indep = np.zeros((self.N, self.P))
 
+        # Verify final variances
         achieved_var_shared = np.var(G_shared.flatten())
         achieved_var_indep = np.var(G_indep.flatten())
         total_var_achieved = achieved_var_shared + achieved_var_indep
@@ -863,24 +722,24 @@ class PhenoSimulator:
 
         return G_shared, G_indep
 
-    def gen_hidden_effects(self, v_s, v_bg, alpha, beta, n_hidden=10):
+    def gen_hidden_effects(self, v_s, v_bg, omega, gamma, n_hidden=10):
         """
-        Generate hidden confounding as:
+        Generate hidden confounding effects 
 
         H = H^(s) + H^(i)
-        H^(s) ~ MVN(0, MM^T, a_H a_H^T)  where a_H = √α_H, α_H ~ Uniform(0,1)
-        H^(i) ~ MVN(0, MM^T, diag(c_H^2))  where c_H = √γ_H, γ_H ~ Uniform(0,1)
+        H^(s) ~ MN(0, MM^T, a_H a_H^T)  where a_H = √τ_{H,s}, τ_{H,s} ~ Uniform(0,1)
+        H^(i) ~ MN(0, MM^T, diag(c_H^2))  where c_H = √τ_{H,i}, τ_{H,i} ~ Uniform(0,1)
 
-        Variance allocations:
-        var[vec(H^(s))] = α * β * (1 - v_bg - v_s)
-        var[vec(H^(i))] = (1-α) * β * (1 - v_bg - v_s)
+        Variance allocation
+        var[vec(H^(s))] = ω * γ * (1 - v_bg - v_s)
+        var[vec(H^(i))] = (1-ω) * γ * (1 - v_bg - v_s)
 
         Parameters:
         v_s: Variance explained by regional effects
         v_bg: Variance explained by background effects  
-        alpha: Fraction of shared signal 
-        beta: Fraction of residual variance that is non-iid 
-        n_hidden: Number of hidden confounders 
+        omega: Fraction of shared signal 
+        gamma: Fraction of residual variance that is non-iid 
+        n_hidden: Number of hidden confounders
 
         Returns:
         H_shared: Shared hidden component H^(s)
@@ -889,9 +748,9 @@ class PhenoSimulator:
         # Calculate residual variance
         v_residual = 1.0 - v_bg - v_s
 
-        # Target variances
-        target_var_shared = alpha * beta * v_residual      # var[vec(H^(s))]
-        target_var_indep = (1 - alpha) * beta * v_residual # var[vec(H^(i))]
+        # Target variances 
+        target_var_shared = omega * gamma * v_residual      # var[vec(H^(s))]
+        target_var_indep = (1 - omega) * gamma * v_residual # var[vec(H^(i))]
 
         print(f"[INFO] Hidden effects variance allocation:")
         print(f"  Residual variance: {v_residual:.4f}")
@@ -919,20 +778,20 @@ class PhenoSimulator:
             U, s, _ = np.linalg.svd(MM_T_stable)
             L = U @ np.diag(np.sqrt(np.maximum(s, 1e-10)))
 
-        # Sample parameters 
-        alpha_H = self.rng_hidden.uniform(0, 1)  # α_H ~ Uniform(0,1) - scalar
-        gamma_H = self.rng_hidden.uniform(0, 1)  # γ_H ~ Uniform(0,1) - scalar
+        # Sample structural parameters (scalars)
+        tau_H_s = self.rng_hidden.uniform(0, 1)  # τ_{H,s} ~ Uniform(0,1)
+        tau_H_i = self.rng_hidden.uniform(0, 1)  # τ_{H,i} ~ Uniform(0,1)
 
-        a_H = np.sqrt(alpha_H)  # a_H = √α_H - scalar
-        c_H = np.sqrt(gamma_H)  # c_H = √γ_H - scalar
+        a_H = np.sqrt(tau_H_s)  # a_H = √τ_{H,s}
+        c_H = np.sqrt(tau_H_i)  # c_H = √τ_{H,i}
 
-        # Generate shared component: H^(s) ~ MVN(0, MM^T, a_H a_H^T)
+        # Generate shared component: H^(s) ~ MN(0, MM^T, a_H a_H^T)
         if target_var_shared > 0:
             z_shared = self.rng_hidden.standard_normal(self.N)
             spatial_shared = L @ z_shared  # Apply spatial correlation MM^T
             H_shared_raw = np.outer(spatial_shared, a_H * np.ones(self.P))  # Apply trait correlation a_H a_H^T
 
-            # Scale to achieve target variance 
+            # Scale to achieve target variance
             current_var_shared = np.var(H_shared_raw.flatten())  # var[vec(H^(s))]
             if current_var_shared > 0:
                 scale_shared = np.sqrt(target_var_shared / current_var_shared)
@@ -942,7 +801,7 @@ class PhenoSimulator:
         else:
             H_shared = np.zeros((self.N, self.P))
 
-        # Generate independent component: H^(i) ~ MVN(0, MM^T, diag(c_H^2))
+        # Generate independent component: H^(i) ~ MN(0, MM^T, diag(c_H^2))
         if target_var_indep > 0:
             Z_indep = self.rng_hidden.standard_normal((self.N, self.P))
             # Apply scalar c_H uniformly to all traits (creates diagonal covariance with equal variances)
@@ -958,6 +817,7 @@ class PhenoSimulator:
         else:
             H_indep = np.zeros((self.N, self.P))
 
+        # Verify final variances
         achieved_var_shared = np.var(H_shared.flatten())
         achieved_var_indep = np.var(H_indep.flatten())
         total_var_achieved = achieved_var_shared + achieved_var_indep
@@ -969,24 +829,24 @@ class PhenoSimulator:
 
         return H_shared, H_indep
 
-    def gen_noise_iid(self, v_s, v_bg, beta):
+    def gen_noise_iid(self, v_s, v_bg, gamma):
         """
         Generate independent residual noise
 
         Variance allocation:
-        var[vec(Ψ)] = (1-β) * (1 - v_bg - v_s)
+        var[vec(Ψ)] = (1-γ) * (1 - v_bg - v_s)
 
         Parameters:
         v_s: Variance explained by regional effects
         v_bg: Variance explained by background effects
-        beta: Fraction of residual variance that is non-iid
+        gamma: Fraction of residual variance that is non-iid
 
         Returns:
         Psi_indep: Independent noise component
         """
         # Calculate target variance 
         v_residual = 1.0 - v_bg - v_s
-        target_var_noise = (1 - beta) * v_residual  # var[vec(Ψ)]
+        target_var_noise = (1 - gamma) * v_residual  # var[vec(Ψ)]
 
         print(f"[INFO] Noise variance allocation:")
         print(f"  Target var[vec(Ψ)]: {target_var_noise:.4f}")
@@ -1022,13 +882,13 @@ class PhenoSimulator:
         corr_bounds=0,                # Zero-indexed correlation bounds for heterogeneity
 
         # Heterogeneity-specific parameters
-        ld_threshold=0.4,             # LD threshold for heterogeneity model
-        max_attempts=500,             # Max attempts for heterogeneity sampling
+        ld_threshold=0.05,             # LD threshold for heterogeneity model
+        max_attempts=100,             # Max attempts for heterogeneity sampling
 
         # Global parameters
         v_bg=None,                     # Background genetic variance 
-        alpha=None,                    # Fraction of shared signal 
-        beta=None,                     # Fraction of residual variance from hidden factors  
+        omega=None,                    # Fraction of shared signal 
+        gamma=None,                     # Fraction of residual variance from hidden factors  
 
         use_XX=True,                  # Use kinship matrix for background
         n_hidden=10,                  # Number of hidden factors
@@ -1036,7 +896,7 @@ class PhenoSimulator:
         global_indices=None,          # Global indices for SNPs
     ):
         """
-        Generate phenotype incorporating alpha-beta reasoning with proper component balancing.
+        Generate phenotype incorporating omega-gamma reasoning with proper component balancing.
 
         Supports both single-model and mixed-model simulation:
         - use_heterogeneity=False: Pure rescaling model 
@@ -1054,8 +914,8 @@ class PhenoSimulator:
             ld_threshold: LD threshold for heterogeneity model (r² < threshold)
             max_attempts: Maximum attempts for heterogeneity sampling
             v_bg: Background genetic variance
-            alpha: Fraction of shared signal across contexts
-            beta: Fraction of residual variance from hidden factors
+            omega: Fraction of shared signal across contexts
+            gamma: Fraction of residual variance from hidden factors
             use_XX: Whether to use kinship matrix for background
             n_hidden: Number of hidden factors
             return_snp_info: Whether to return SNP info
@@ -1073,12 +933,12 @@ class PhenoSimulator:
             v_s = params['v_s']
         if v_bg is None:
             v_bg = params['v_bg']
-        if alpha is None:
-            alpha = params['alpha']
-        if beta is None:
-            beta = params['beta']
+        if omega is None:
+            omega = params['omega']
+        if gamma is None:
+            gamma = params['gamma']
 
-        print(f"[INFO] Using parameters for {self.dset}: v_s={v_s}, v_bg={v_bg}, alpha={alpha}, beta={beta}")
+        print(f"[INFO] Using parameters for {self.dset}: v_s={v_s}, v_bg={v_bg}, omega={omega}, gamma={gamma}")
 
         if use_heterogeneity:
             print(f'[INFO] Generating phenotype with heterogeneity effects')
@@ -1105,7 +965,8 @@ class PhenoSimulator:
                 return_snp_info=return_snp_info,
                 global_indices=global_indices,
                 ncausal=ncausal,  
-                ld_threshold=ld_threshold
+                ld_threshold=ld_threshold,
+                max_attempts=max_attempts
             )
         else:
             # Rescaling-only effects
@@ -1119,7 +980,7 @@ class PhenoSimulator:
         # Background genetic effects 
         G_shared, G_indep = self.gen_background_effects(
             v_bg=v_bg, 
-            alpha=alpha, 
+            omega=omega, 
             use_XX=use_XX
         )
 
@@ -1130,8 +991,8 @@ class PhenoSimulator:
         H_shared, H_indep = self.gen_hidden_effects(
             v_s=v_s,
             v_bg=v_bg,
-            alpha=alpha, 
-            beta=beta, 
+            omega=omega, 
+            gamma=gamma, 
             n_hidden=n_hidden
         )
 
@@ -1139,7 +1000,7 @@ class PhenoSimulator:
         Psi_indep = self.gen_noise_iid(
             v_s=v_s,
             v_bg=v_bg,
-            beta=beta
+            gamma=gamma
         )
 
         # Apply consistent balancing strategy
@@ -1239,8 +1100,8 @@ class PhenoSimulator:
             'v_s': v_s,
             'v_bg': v_bg,
             'v_residual': v_residual,
-            'alpha': alpha,
-            'beta': beta,
+            'omega': omega,
+            'gamma': gamma,
 
             # Model-specific parameters
             'use_heterogeneity': use_heterogeneity,
